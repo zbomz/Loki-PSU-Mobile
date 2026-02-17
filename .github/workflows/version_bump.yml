@@ -1,0 +1,56 @@
+name: Bump Version
+
+on:
+  workflow_call:
+    outputs:
+      new_version:
+        description: "The new version string (e.g., 1.0.0+42)"
+        value: ${{ jobs.bump-version.outputs.new_version }}
+      build_number:
+        description: "The new build number (e.g., 42)"
+        value: ${{ jobs.bump-version.outputs.build_number }}
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump_version.outputs.NEW_VERSION }}
+      build_number: ${{ steps.bump_version.outputs.BUILD_NUMBER }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Check for [skip version] or [skip ci] in commit message
+      id: check_skip
+      run: |
+        COMMIT_MSG=$(git log -1 --pretty=%B)
+        if [[ "$COMMIT_MSG" =~ \[skip\ version\] ]] || [[ "$COMMIT_MSG" =~ \[skip\ ci\] ]]; then
+          echo "skip=true" >> $GITHUB_OUTPUT
+          echo "Version bump skipped due to commit message"
+        else
+          echo "skip=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Bump Version
+      id: bump_version
+      if: steps.check_skip.outputs.skip == 'false'
+      run: |
+        chmod +x .github/scripts/bump_version.sh
+        .github/scripts/bump_version.sh
+
+    - name: Commit Version Bump
+      if: steps.check_skip.outputs.skip == 'false'
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add pubspec.yaml
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "chore: bump version to ${{ steps.bump_version.outputs.NEW_VERSION }} [skip ci]"
+          git push
+        fi

@@ -100,9 +100,9 @@ UUIDs are derived from "LokiPSU" in ASCII hex (`4c6f6b69-5053-55`), making them 
 - **Default BLE MTU:** 23 bytes (ATT payload = 20 bytes)
 - **Firmware requested MTU:** 256 bytes
 - **Negotiated MTU:** Depends on client; most modern phones support 247+ bytes
-- **Largest response:** `TELEMETRY_BUNDLE` = 29 bytes (header 3 + value 24 + CRC 2)
+- **Largest response:** `CONFIG_BUNDLE` = 50 bytes (header 3 + value 45 + CRC 2)
 
-If the negotiated MTU is less than 29 bytes, the `TELEMETRY_BUNDLE` response may fail. Individual telemetry reads (9 bytes each) always fit within the default MTU.
+If the negotiated MTU is less than 50 bytes, the `CONFIG_BUNDLE` response may fail. Individual config reads always fit within the default MTU.
 
 **Flutter recommendation:** After connecting, call `requestMtu(256)` to negotiate a larger MTU before sending any requests.
 
@@ -152,6 +152,34 @@ Value field layout (all IEEE 754 float32, little-endian):
 | 16-19 | Measured PSU Internal Temperature | Celsius |
 | 20-23 | Total Energy Since Boot | Watt-hours |
 
+### Configuration Bundle (Tag 0x1F)
+
+Returns all 15 read-write configuration values in a single response. Reduces settings refresh from 15 BLE round trips to 1.
+
+**Request:** `[0x15][0x1F][0x00][CRC_LSB][CRC_MSB]` = 5 bytes
+
+**Response:** `[0x15][0x1F][0x2D][...45 bytes of mixed data...][CRC_LSB][CRC_MSB]` = 50 bytes
+
+Value field layout (mixed float32 and uint8, little-endian):
+
+| Byte Offset | Field | Type | Units |
+|-------------|-------|------|-------|
+| 0-3 | PSU_TARGET_OUTPUT_VOLTAGE | float32 | Volts |
+| 4-7 | MAX_PSU_OUTPUT_POWER_THRESHOLD | float32 | Watts |
+| 8-11 | TARGET_PSU_INLET_TEMPERATURE | float32 | Celsius |
+| 12-15 | POWER_FAULT_TIMEOUT | float32 | seconds |
+| 16-19 | PSU_OTP_THRESHOLD | float32 | Celsius |
+| 20 | PSU_MAX_POWER_SHUTOFF_ENABLE | uint8 | 0/1 |
+| 21 | PSU_THERMOSTAT_ENABLE | uint8 | 0/1 |
+| 22 | PSU_SILENCE_FAN_ENABLE | uint8 | 0/1 |
+| 23 | SPOOFED_PSU_HARDWARE_MODEL | uint8 | model byte |
+| 24 | SPOOFED_PSU_FIRMWARE_VERSION | uint8 | version byte |
+| 25 | PSU_OUTPUT_ENABLE | uint8 | 0/1 |
+| 26 | PSU_VOLTAGE_REGULATION_ENABLE | uint8 | 0/1 |
+| 27 | SPOOF_ABOVE_MAX_OUTPUT_VOLTAGE_ENABLE | uint8 | 0/1 |
+| 28 | AUTOMATIC_RETRY_AFTER_POWER_FAULT_ENABLE | uint8 | 0/1 |
+| 29 | PSU_OTP_ENABLE | uint8 | 0/1 |
+
 ### Error Responses
 
 When an operation fails, the response contains tag `0xF1`:
@@ -184,6 +212,7 @@ When an operation fails, the response contains tag `0xF1`:
 | 0x05 | MEASURED_PSU_INTERNAL_TEMP | float32 | Celsius |
 | 0x06 | TOTAL_ENERGY_WH | float32 | Watt-hours |
 | 0x0F | TELEMETRY_BUNDLE | 6x float32 | Mixed (see above) |
+| 0x1F | CONFIG_BUNDLE | mixed | Mixed (see above) |
 
 ### Read-Write Configuration (0x10-0x1E)
 
@@ -327,6 +356,9 @@ class TlvResponse {
 
   /// Decode value as the telemetry bundle (6 floats).
   TelemetryBundle get asTelemetryBundle => TelemetryBundle.fromBytes(value);
+
+  /// Decode value as the config bundle (15 mixed values).
+  ConfigBundle get asConfigBundle => ConfigBundle.fromBytes(value);
 }
 
 /// All 6 telemetry values returned by TELEMETRY_BUNDLE (tag 0x0F).
@@ -362,6 +394,75 @@ class TelemetryBundle {
       inletTemperature:    bd.getFloat32(12, Endian.little),
       internalTemperature: bd.getFloat32(16, Endian.little),
       energyWh:            bd.getFloat32(20, Endian.little),
+    );
+  }
+}
+
+/// All 15 configuration values returned by CONFIG_BUNDLE (tag 0x1F).
+class ConfigBundle {
+  final double targetVoltage;
+  final double maxPowerThreshold;
+  final double targetInletTemperature;
+  final double powerFaultTimeout;
+  final double psuOtpThreshold;
+  final int psuMaxPowerShutoffEnable;
+  final int psuThermostatEnable;
+  final int psuSilenceFanEnable;
+  final int spoofedPsuHardwareModel;
+  final int spoofedPsuFirmwareVersion;
+  final int psuOutputEnable;
+  final int psuVoltageRegulationEnable;
+  final int spoofAboveMaxOutputVoltageEnable;
+  final int automaticRetryAfterPowerFaultEnable;
+  final int psuOtpEnable;
+
+  ConfigBundle({
+    required this.targetVoltage,
+    required this.maxPowerThreshold,
+    required this.targetInletTemperature,
+    required this.powerFaultTimeout,
+    required this.psuOtpThreshold,
+    required this.psuMaxPowerShutoffEnable,
+    required this.psuThermostatEnable,
+    required this.psuSilenceFanEnable,
+    required this.spoofedPsuHardwareModel,
+    required this.spoofedPsuFirmwareVersion,
+    required this.psuOutputEnable,
+    required this.psuVoltageRegulationEnable,
+    required this.spoofAboveMaxOutputVoltageEnable,
+    required this.automaticRetryAfterPowerFaultEnable,
+    required this.psuOtpEnable,
+  });
+
+  factory ConfigBundle.fromBytes(Uint8List bytes) {
+    if (bytes.length < TlvConstants.configBundleValueSize) {
+      return ConfigBundle(
+        targetVoltage: 0, maxPowerThreshold: 0, targetInletTemperature: 0,
+        powerFaultTimeout: 0, psuOtpThreshold: 0,
+        psuMaxPowerShutoffEnable: 0, psuThermostatEnable: 0, psuSilenceFanEnable: 0,
+        spoofedPsuHardwareModel: 0, spoofedPsuFirmwareVersion: 0,
+        psuOutputEnable: 0, psuVoltageRegulationEnable: 0,
+        spoofAboveMaxOutputVoltageEnable: 0,
+        automaticRetryAfterPowerFaultEnable: 0, psuOtpEnable: 0,
+      );
+    }
+    final bd = ByteData.sublistView(bytes);
+    return ConfigBundle(
+      targetVoltage:                bd.getFloat32(0, Endian.little),
+      maxPowerThreshold:            bd.getFloat32(4, Endian.little),
+      targetInletTemperature:       bd.getFloat32(8, Endian.little),
+      powerFaultTimeout:            bd.getFloat32(12, Endian.little),
+      psuOtpThreshold:              bd.getFloat32(16, Endian.little),
+      psuMaxPowerShutoffEnable:     bytes[20],
+      psuThermostatEnable:          bytes[21],
+      psuSilenceFanEnable:          bytes[22],
+      spoofedPsuHardwareModel:      bytes[23],
+      spoofedPsuFirmwareVersion:    bytes[24],
+      psuOutputEnable:              bytes[25],
+      psuVoltageRegulationEnable:   bytes[26],
+      spoofAboveMaxOutputVoltageEnable: bytes[27],
+      automaticRetryAfterPowerFaultEnable: bytes[28],
+      psuOtpEnable:                 bytes[29],
     );
   }
 }
@@ -495,6 +596,21 @@ Response: [0x15, 0x0F, 0x18,
            CRC_LSB, CRC_MSB]
 ```
 
+### Read Configuration Bundle
+
+```
+Request:  [0x15, 0x1F, 0x00, CRC_LSB, CRC_MSB]
+Response: [0x15, 0x1F, 0x2D,
+           TV3, TV2, TV1, TV0,       // target voltage (float32 LE)
+           MP3, MP2, MP1, MP0,       // max power threshold
+           IT3, IT2, IT1, IT0,       // target inlet temp
+           FT3, FT2, FT1, FT0,       // power fault timeout
+           OT3, OT2, OT1, OT0,       // PSU OTP threshold
+           MS, TS, FS, HM, FV,       // uint8 enables and spoof values
+           OE, VE, SA, AR, OE,       // more uint8 enables
+           CRC_LSB, CRC_MSB]
+```
+
 ### Set Target Voltage to 12.15V
 
 ```
@@ -549,7 +665,7 @@ Response: [0x15, 0xF0, 0x01, 0x00, CRC_LSB, CRC_MSB]
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0 | 2026-02-16 | Initial BLE Interface Specification with GATT layout, Dart protocol code, and TELEMETRY_BUNDLE support |
+| 1.1 | 2026-02-17 | Added CONFIG_BUNDLE support for reading all configuration values in a single request |
 
 ---
 

@@ -1,0 +1,72 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Bump Version
+      id: bump_version
+      run: |
+        chmod +x .github/scripts/bump_version.sh
+        .github/scripts/bump_version.sh
+
+    - name: Commit Version Bump
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add pubspec.yaml
+        git diff --staged --quiet || git commit -m "chore: bump version to ${{ steps.bump_version.outputs.NEW_VERSION }} [skip ci]"
+        git push
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.0'
+        channel: 'stable'
+
+    - name: Get dependencies
+      run: flutter pub get
+
+    - name: Analyze code
+      run: flutter analyze
+
+    - name: Run tests
+      run: flutter test
+
+    - name: Build APK
+      run: flutter build apk --release
+
+    - name: Build App Bundle
+      run: flutter build appbundle --release
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: loki-psu-android-apk-${{ steps.bump_version.outputs.BUILD_NUMBER }}
+        path: build/app/outputs/flutter-apk/app-release.apk
+        retention-days: 30
+
+    - name: Upload App Bundle
+      uses: actions/upload-artifact@v4
+      with:
+        name: loki-psu-android-bundle-${{ steps.bump_version.outputs.BUILD_NUMBER }}
+        path: build/app/outputs/bundle/release/app-release.aab
+        retention-days: 30

@@ -25,6 +25,12 @@ class PsuStateProvider extends ChangeNotifier {
 
   PsuStateProvider(this._bleService) {
     _stateSub = _bleService.stateStream.listen(_onConnectionStateChanged);
+    // PsuStateProvider is lazily created (on first watch from DashboardScreen),
+    // so the 'connected' event may have already fired before this constructor
+    // runs.  Check the current state and kick off data loading if needed.
+    if (_bleService.state == BleConnectionState.connected) {
+      _onConnected();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -74,11 +80,11 @@ class PsuStateProvider extends ChangeNotifier {
         final bundle = response.asTelemetryBundle;
         _state = _state.copyWith(
           outputVoltage: bundle.voltage,
-          outputCurrent: bundle.current,
-          outputPower: bundle.power,
+          outputCurrent: bundle.current.clamp(0, double.infinity),
+          outputPower: bundle.power.clamp(0, double.infinity),
           inletTemperature: bundle.inletTemperature,
           internalTemperature: bundle.internalTemperature,
-          energyWh: bundle.energyWh,
+          energyWh: bundle.energyWh.clamp(0, double.infinity),
         );
         _error = null;
         notifyListeners();
