@@ -34,6 +34,7 @@ jobs:
     - name: Package app for distribution
       run: |
         cd build/ios/iphoneos
+        rm -rf Payload
         mkdir Payload
         cp -r Runner.app Payload/
         zip -r loki-psu-debug.ipa Payload
@@ -51,6 +52,7 @@ jobs:
     - name: Package release app
       run: |
         cd build/ios/iphoneos
+        rm -rf Payload
         mkdir Payload
         cp -r Runner.app Payload/
         zip -r loki-psu-release.ipa Payload
