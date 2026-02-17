@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -99,7 +100,10 @@ class BleService {
       _device = device;
 
       // Request a larger MTU for telemetry bundle responses.
-      await device.requestMtu(BleConstants.requestedMtu);
+      // Note: MTU request is Android-only. iOS negotiates MTU automatically.
+      if (Platform.isAndroid) {
+        await device.requestMtu(BleConstants.requestedMtu);
+      }
 
       // Discover services and locate characteristics.
       final services = await device.discoverServices();
