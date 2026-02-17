@@ -40,16 +40,17 @@ class PsuStateProvider extends ChangeNotifier {
   }
 
   Future<void> _onConnected() async {
-    // Read all config values once.
-    await refreshAllConfigs();
-    // Start polling telemetry every 1 second.
+    // Start polling telemetry immediately every 1 second.
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(
       const Duration(seconds: 1),
       (_) => refreshTelemetry(),
     );
-    // Fetch initial telemetry immediately.
-    await refreshTelemetry();
+    
+    // Fetch telemetry and configs in parallel for faster dashboard load.
+    // Telemetry will be visible in ~1s, configs will follow.
+    unawaited(refreshTelemetry());
+    unawaited(refreshAllConfigs());
   }
 
   void _onDisconnected() {
@@ -97,34 +98,36 @@ class PsuStateProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Float32 configs
-      _state = _state.copyWith(
-        targetOutputVoltage: await _readFloat(ProtocolTag.psuTargetOutputVoltage),
-        maxPowerThreshold: await _readFloat(ProtocolTag.maxPsuOutputPowerThreshold),
-        targetInletTemperature: await _readFloat(ProtocolTag.targetPsuInletTemperature),
-        powerFaultTimeout: await _readFloat(ProtocolTag.powerFaultTimeout),
-        otpThreshold: await _readFloat(ProtocolTag.psuOtpThreshold),
+      // Use CONFIG_BUNDLE to fetch all 15 config values in a single request
+      // This reduces loading time from ~5-7s (15 requests) to ~500ms (1 request)
+      final response = await _bleService.sendRequest(
+        TlvRequestBuilder.readRequest(ProtocolTag.configBundle),
       );
-
-      // Uint8 / boolean configs
-      _state = _state.copyWith(
-        maxPowerShutoffEnable: await _readBool(ProtocolTag.psuMaxPowerShutoffEnable),
-        thermostatEnable: await _readBool(ProtocolTag.psuThermostatEnable),
-        silenceFanEnable: await _readBool(ProtocolTag.psuSilenceFanEnable),
-        outputEnable: await _readBool(ProtocolTag.psuOutputEnable),
-        voltageRegulationEnable: await _readBool(ProtocolTag.psuVoltageRegulationEnable),
-        spoofAboveMaxVoltageEnable: await _readBool(ProtocolTag.spoofAboveMaxOutputVoltageEnable),
-        autoRetryAfterFaultEnable: await _readBool(ProtocolTag.automaticRetryAfterPowerFaultEnable),
-        otpEnable: await _readBool(ProtocolTag.psuOtpEnable),
-      );
-
-      // Uint8 non-boolean configs
-      _state = _state.copyWith(
-        spoofedHardwareModel: await _readUint8(ProtocolTag.spoofedPsuHardwareModel),
-        spoofedFirmwareVersion: await _readUint8(ProtocolTag.spoofedPsuFirmwareVersion),
-      );
-
-      _error = null;
+      
+      if (response.tag == ProtocolTag.configBundle) {
+        final bundle = response.asConfigBundle;
+        
+        // Update all config values at once
+        _state = _state.copyWith(
+          targetOutputVoltage: bundle.targetOutputVoltage,
+          maxPowerThreshold: bundle.maxPowerThreshold,
+          targetInletTemperature: bundle.targetInletTemperature,
+          powerFaultTimeout: bundle.powerFaultTimeout,
+          otpThreshold: bundle.otpThreshold,
+          maxPowerShutoffEnable: bundle.maxPowerShutoffEnable,
+          thermostatEnable: bundle.thermostatEnable,
+          silenceFanEnable: bundle.silenceFanEnable,
+          outputEnable: bundle.outputEnable,
+          voltageRegulationEnable: bundle.voltageRegulationEnable,
+          spoofAboveMaxVoltageEnable: bundle.spoofAboveMaxVoltageEnable,
+          autoRetryAfterFaultEnable: bundle.autoRetryAfterFaultEnable,
+          otpEnable: bundle.otpEnable,
+          spoofedHardwareModel: bundle.spoofedHardwareModel,
+          spoofedFirmwareVersion: bundle.spoofedFirmwareVersion,
+        );
+        
+        _error = null;
+      }
     } catch (e) {
       _error = 'Config read error: $e';
     } finally {

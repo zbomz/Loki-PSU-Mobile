@@ -66,6 +66,8 @@ class ProtocolTag {
   static const int psuOtpThreshold = 0x1D;
   /// uint8, 0/1 - Enable PSU over-temperature protection (default ON)
   static const int psuOtpEnable = 0x1E;
+  /// Multi-byte (45 bytes) - All configuration values in one response
+  static const int configBundle = 0x1F;
   // ===== Query (0x20-0x2F) =====
   // PSU_TARGET_OUTPUT_VOLTAGE queries
   /// float32, Volts - Minimum allowed target voltage
@@ -148,4 +150,10 @@ class TlvConstants {
   static const int telemetryBundleFloatCount = 6;
   /// 24 bytes
   static const int telemetryBundleValueSize = 24;
+  /// Number of float32 values in config bundle
+  static const int configBundleFloatCount = 5;
+  /// Number of uint8 values in config bundle
+  static const int configBundleUint8Count = 10;
+  /// 45 bytes (5*4 + 10*1 + 25 reserved)
+  static const int configBundleValueSize = 45;
 }

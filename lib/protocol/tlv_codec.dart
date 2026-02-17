@@ -29,6 +29,9 @@ class TlvResponse {
 
   /// Decode value as the telemetry bundle (6 floats).
   TelemetryBundle get asTelemetryBundle => TelemetryBundle.fromBytes(value);
+
+  /// Decode value as the config bundle (5 floats + 10 uint8s).
+  ConfigBundle get asConfigBundle => ConfigBundle.fromBytes(value);
 }
 
 /// All 6 telemetry values returned by TELEMETRY_BUNDLE (tag 0x0F).
@@ -68,6 +71,86 @@ class TelemetryBundle {
       inletTemperature: bd.getFloat32(12, Endian.little),
       internalTemperature: bd.getFloat32(16, Endian.little),
       energyWh: bd.getFloat32(20, Endian.little),
+    );
+  }
+}
+
+/// All 15 configuration values returned by CONFIG_BUNDLE (tag 0x1F).
+class ConfigBundle {
+  final double targetOutputVoltage;
+  final double maxPowerThreshold;
+  final double targetInletTemperature;
+  final double powerFaultTimeout;
+  final double otpThreshold;
+  final bool maxPowerShutoffEnable;
+  final bool thermostatEnable;
+  final bool silenceFanEnable;
+  final bool outputEnable;
+  final bool voltageRegulationEnable;
+  final bool spoofAboveMaxVoltageEnable;
+  final bool autoRetryAfterFaultEnable;
+  final bool otpEnable;
+  final int spoofedHardwareModel;
+  final int spoofedFirmwareVersion;
+
+  ConfigBundle({
+    required this.targetOutputVoltage,
+    required this.maxPowerThreshold,
+    required this.targetInletTemperature,
+    required this.powerFaultTimeout,
+    required this.otpThreshold,
+    required this.maxPowerShutoffEnable,
+    required this.thermostatEnable,
+    required this.silenceFanEnable,
+    required this.outputEnable,
+    required this.voltageRegulationEnable,
+    required this.spoofAboveMaxVoltageEnable,
+    required this.autoRetryAfterFaultEnable,
+    required this.otpEnable,
+    required this.spoofedHardwareModel,
+    required this.spoofedFirmwareVersion,
+  });
+
+  factory ConfigBundle.fromBytes(Uint8List bytes) {
+    if (bytes.length < TlvConstants.configBundleValueSize) {
+      return ConfigBundle(
+        targetOutputVoltage: 0.0,
+        maxPowerThreshold: 0.0,
+        targetInletTemperature: 0.0,
+        powerFaultTimeout: 0.0,
+        otpThreshold: 0.0,
+        maxPowerShutoffEnable: false,
+        thermostatEnable: false,
+        silenceFanEnable: false,
+        outputEnable: false,
+        voltageRegulationEnable: false,
+        spoofAboveMaxVoltageEnable: false,
+        autoRetryAfterFaultEnable: false,
+        otpEnable: false,
+        spoofedHardwareModel: 0,
+        spoofedFirmwareVersion: 0,
+      );
+    }
+    final bd = ByteData.sublistView(bytes);
+    return ConfigBundle(
+      // Float32 configs (bytes 0-19)
+      targetOutputVoltage: bd.getFloat32(0, Endian.little),
+      maxPowerThreshold: bd.getFloat32(4, Endian.little),
+      targetInletTemperature: bd.getFloat32(8, Endian.little),
+      powerFaultTimeout: bd.getFloat32(12, Endian.little),
+      otpThreshold: bd.getFloat32(16, Endian.little),
+      // Uint8 boolean configs (bytes 20-27)
+      maxPowerShutoffEnable: bytes[20] != 0,
+      thermostatEnable: bytes[21] != 0,
+      silenceFanEnable: bytes[22] != 0,
+      outputEnable: bytes[23] != 0,
+      voltageRegulationEnable: bytes[24] != 0,
+      spoofAboveMaxVoltageEnable: bytes[25] != 0,
+      autoRetryAfterFaultEnable: bytes[26] != 0,
+      otpEnable: bytes[27] != 0,
+      // Uint8 non-boolean configs (bytes 28-29)
+      spoofedHardwareModel: bytes[28],
+      spoofedFirmwareVersion: bytes[29],
     );
   }
 }
