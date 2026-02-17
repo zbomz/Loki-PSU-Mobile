@@ -32,6 +32,11 @@ class BleService {
   /// Completer that gets completed when a notification arrives.
   Completer<Uint8List>? _responseCompleter;
 
+  /// Async lock to serialize BLE requests.  The firmware processes one
+  /// request at a time and uses a single response completer, so concurrent
+  /// calls to [sendRequest] must be queued.
+  Future<void>? _requestLock;
+
   /// Constructor that continuously monitors the Bluetooth adapter state
   BleService() {
     _startAdapterStateMonitor();
@@ -186,11 +191,31 @@ class BleService {
   /// Send a raw TLV request and return the parsed [TlvResponse].
   ///
   /// Retries up to [BleConstants.maxRetries] times on timeout or CRC error.
+  /// Concurrent callers are serialized so only one request is in flight at
+  /// a time (the firmware and response completer are single-threaded).
   Future<TlvResponse> sendRequest(Uint8List request) async {
     if (_state != BleConnectionState.connected || _requestChar == null) {
       throw StateError('Not connected to a Loki PSU device');
     }
 
+    // Wait for any in-flight request to finish before starting ours.
+    final prev = _requestLock;
+    final gate = Completer<void>();
+    _requestLock = gate.future;
+
+    if (prev != null) {
+      await prev;
+    }
+
+    try {
+      return await _sendRequestInternal(request);
+    } finally {
+      gate.complete();
+    }
+  }
+
+  /// Internal send without locking — called only from [sendRequest].
+  Future<TlvResponse> _sendRequestInternal(Uint8List request) async {
     for (int attempt = 0; attempt < BleConstants.maxRetries; attempt++) {
       try {
         _responseCompleter = Completer<Uint8List>();

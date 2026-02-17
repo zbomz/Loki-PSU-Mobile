@@ -41,6 +41,8 @@ class BleProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  StreamSubscription<List<ScanResult>>? _scanResultsSub;
+
   Future<void> startScan() async {
     _error = null;
     _scanResults = [];
@@ -48,19 +50,23 @@ class BleProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Listen to scan results.
-      final sub = _bleService.scanResults.listen((results) {
+      // Listen to scan results for the entire duration of the scan.
+      _scanResultsSub?.cancel();
+      _scanResultsSub = _bleService.scanResults.listen((results) {
         _scanResults = results;
         notifyListeners();
       });
 
       await _bleService.startScan(timeout: const Duration(seconds: 5));
 
-      // Scan completed (timeout elapsed).
-      await sub.cancel();
+      // startScan() returns as soon as scanning begins, NOT when it finishes.
+      // Wait until the scan actually stops (timeout elapses or stopScan called).
+      await FlutterBluePlus.isScanning.where((scanning) => !scanning).first;
     } catch (e) {
       _error = e.toString();
     } finally {
+      await _scanResultsSub?.cancel();
+      _scanResultsSub = null;
       _isScanning = false;
       notifyListeners();
     }
