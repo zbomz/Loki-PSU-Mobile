@@ -36,6 +36,11 @@ class BleProvider extends ChangeNotifier {
   // Actions
   // ---------------------------------------------------------------------------
 
+  void clearError() {
+    _error = null;
+    notifyListeners();
+  }
+
   Future<void> startScan() async {
     _error = null;
     _scanResults = [];

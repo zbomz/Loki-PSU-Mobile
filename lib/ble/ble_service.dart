@@ -49,6 +49,27 @@ class BleService {
   bool get isScanning => FlutterBluePlus.isScanningNow;
 
   Future<void> startScan({Duration timeout = const Duration(seconds: 5)}) async {
+    // Wait for Bluetooth adapter to be ready (not in unknown state)
+    // This is critical on iOS where the Bluetooth manager needs time to initialize
+    final adapterState = await FlutterBluePlus.adapterState
+        .firstWhere((state) => state != BluetoothAdapterState.unknown)
+        .timeout(
+          const Duration(seconds: 3),
+          onTimeout: () => BluetoothAdapterState.unknown,
+        );
+    
+    if (adapterState == BluetoothAdapterState.unknown) {
+      throw Exception(
+        'Bluetooth is not ready. Please wait a moment and try again.'
+      );
+    }
+    
+    if (adapterState != BluetoothAdapterState.on) {
+      throw Exception(
+        'Bluetooth must be turned on. Current state: ${adapterState.name}'
+      );
+    }
+
     await FlutterBluePlus.startScan(
       withServices: [BleConstants.serviceUuid],
       timeout: timeout,

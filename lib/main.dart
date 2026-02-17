@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 
 import 'ble/ble_service.dart';
@@ -8,6 +9,15 @@ import 'screens/scan_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize FlutterBluePlus early to allow Bluetooth manager to initialize
+  // This is especially important on iOS
+  try {
+    FlutterBluePlus.setLogLevel(LogLevel.info);
+  } catch (e) {
+    // Platform not supported (e.g., in tests) - continue without BLE
+  }
+  
   runApp(const LokiPsuApp());
 }
 
