@@ -5,9 +5,6 @@ on:
     branches: [ main, develop ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build-ios-signed:
     runs-on: macos-latest
@@ -15,23 +12,15 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
 
-    - name: Bump Version
-      id: bump_version
+    - name: Read current version
+      id: read_version
       run: |
-        chmod +x .github/scripts/bump_version.sh
-        .github/scripts/bump_version.sh
-
-    - name: Commit Version Bump
-      run: |
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"
-        git add pubspec.yaml
-        git diff --staged --quiet || git commit -m "chore: bump version to ${{ steps.bump_version.outputs.NEW_VERSION }} [skip ci]"
-        git push
+        VERSION=$(grep "^version:" pubspec.yaml | sed 's/version: //' | tr -d ' ')
+        BUILD_NUMBER=$(echo "$VERSION" | cut -d'+' -f2)
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+        echo "Current version: $VERSION (build $BUILD_NUMBER)"
 
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
@@ -128,7 +117,7 @@ jobs:
     - name: Upload Signed IPA
       uses: actions/upload-artifact@v4
       with:
-        name: loki-psu-ios-signed-${{ steps.bump_version.outputs.BUILD_NUMBER }}
+        name: loki-psu-ios-signed-${{ steps.read_version.outputs.BUILD_NUMBER }}
         path: build/ios/iphoneos/loki-psu-signed.ipa
         retention-days: 30
 
