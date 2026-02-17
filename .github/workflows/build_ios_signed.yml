@@ -37,39 +37,69 @@ jobs:
         # Create temporary keychain
         KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
         KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-        
+
         # Create and unlock keychain
         security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
         security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
         security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-        
+
         # Import certificate
         CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
-        echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > $CERTIFICATE_PATH
+        echo -n "$IOS_CERTIFICATE_BASE64" | base64 --decode > $CERTIFICATE_PATH
         security import $CERTIFICATE_PATH -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-        
+
         # Set keychain as default
         security list-keychain -d user -s $KEYCHAIN_PATH
         security default-keychain -s $KEYCHAIN_PATH
         security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-        
+
         # Install provisioning profile
         PROVISIONING_PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
-        echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > $PROVISIONING_PROFILE_PATH
-        
-        # Copy to proper location
+        echo -n "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > $PROVISIONING_PROFILE_PATH
+
+        # Copy to proper location with UUID filename
         mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-        cp $PROVISIONING_PROFILE_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
-        
-        # Get UUID from provisioning profile
         PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< $(/usr/bin/security cms -D -i $PROVISIONING_PROFILE_PATH))
         cp $PROVISIONING_PROFILE_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$PROFILE_UUID.mobileprovision
 
-    - name: Build iOS (Release - Signed)
-      run: flutter build ios --release
+        # Extract signing identity name from keychain
+        SIGNING_IDENTITY=$(security find-identity -v -p codesigning $KEYCHAIN_PATH | head -1 | grep -o '"[^"]*"' | tr -d '"')
 
-    - name: Package IPA
+        # Extract entitlements from provisioning profile
+        security cms -D -i $PROVISIONING_PROFILE_PATH > $RUNNER_TEMP/profile_full.plist
+        /usr/libexec/PlistBuddy -x -c "Print :Entitlements" $RUNNER_TEMP/profile_full.plist > $RUNNER_TEMP/entitlements.plist
+
+        # Export for later steps
+        echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+        echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> $GITHUB_ENV
+        echo "PROVISIONING_PROFILE_PATH=$PROVISIONING_PROFILE_PATH" >> $GITHUB_ENV
+        echo "ENTITLEMENTS_PATH=$RUNNER_TEMP/entitlements.plist" >> $GITHUB_ENV
+
+    - name: Build iOS (Release - Unsigned)
+      run: flutter build ios --release --no-codesign
+
+    - name: Sign and Package IPA
       run: |
+        APP_PATH=build/ios/iphoneos/Runner.app
+
+        # Embed provisioning profile
+        cp "$PROVISIONING_PROFILE_PATH" "$APP_PATH/embedded.mobileprovision"
+
+        # Sign all embedded frameworks first
+        if [ -d "$APP_PATH/Frameworks" ]; then
+          find "$APP_PATH/Frameworks" -name "*.framework" -o -name "*.dylib" | while read framework; do
+            codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$framework"
+          done
+        fi
+
+        # Sign the main app bundle
+        codesign --force --sign "$SIGNING_IDENTITY" --entitlements "$ENTITLEMENTS_PATH" --timestamp=none "$APP_PATH"
+
+        # Verify signing
+        codesign --verify --deep --strict "$APP_PATH"
+        echo "Code signing verified successfully!"
+
+        # Package as IPA
         cd build/ios/iphoneos
         mkdir -p Payload
         cp -r Runner.app Payload/
@@ -85,7 +115,8 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
-        # Clean up keychain and certificates
         security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
         rm -f $RUNNER_TEMP/certificate.p12 || true
         rm -f $RUNNER_TEMP/profile.mobileprovision || true
+        rm -f $RUNNER_TEMP/profile_full.plist || true
+        rm -f $RUNNER_TEMP/entitlements.plist || true
