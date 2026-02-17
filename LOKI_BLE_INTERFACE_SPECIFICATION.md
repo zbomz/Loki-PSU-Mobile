@@ -100,9 +100,9 @@ UUIDs are derived from "LokiPSU" in ASCII hex (`4c6f6b69-5053-55`), making them 
 - **Default BLE MTU:** 23 bytes (ATT payload = 20 bytes)
 - **Firmware requested MTU:** 256 bytes
 - **Negotiated MTU:** Depends on client; most modern phones support 247+ bytes
-- **Largest response:** `CONFIG_BUNDLE` = 50 bytes (header 3 + value 45 + CRC 2)
+- **Largest response:** `CONFIG_BUNDLE` = 35 bytes (header 3 + value 30 + CRC 2)
 
-If the negotiated MTU is less than 50 bytes, the `CONFIG_BUNDLE` response may fail. Individual config reads always fit within the default MTU.
+If the negotiated MTU is less than 35 bytes, the `CONFIG_BUNDLE` response may fail. Individual config reads always fit within the default MTU.
 
 **Flutter recommendation:** After connecting, call `requestMtu(256)` to negotiate a larger MTU before sending any requests.
 
@@ -158,7 +158,7 @@ Returns all 15 read-write configuration values in a single response. Reduces set
 
 **Request:** `[0x15][0x1F][0x00][CRC_LSB][CRC_MSB]` = 5 bytes
 
-**Response:** `[0x15][0x1F][0x2D][...45 bytes of mixed data...][CRC_LSB][CRC_MSB]` = 50 bytes
+**Response:** `[0x15][0x1F][0x1E][...30 bytes of mixed data...][CRC_LSB][CRC_MSB]` = 35 bytes
 
 Value field layout (mixed float32 and uint8, little-endian):
 
@@ -600,7 +600,7 @@ Response: [0x15, 0x0F, 0x18,
 
 ```
 Request:  [0x15, 0x1F, 0x00, CRC_LSB, CRC_MSB]
-Response: [0x15, 0x1F, 0x2D,
+Response: [0x15, 0x1F, 0x1E,
            TV3, TV2, TV1, TV0,       // target voltage (float32 LE)
            MP3, MP2, MP1, MP0,       // max power threshold
            IT3, IT2, IT1, IT0,       // target inlet temp
