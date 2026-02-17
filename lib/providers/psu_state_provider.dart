@@ -98,16 +98,32 @@ class PsuStateProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Use CONFIG_BUNDLE to fetch all 15 config values in a single request
-      // This reduces loading time from ~5-7s (15 requests) to ~500ms (1 request)
+      // Try CONFIG_BUNDLE first (single request, ~500ms).
+      // Falls back to individual reads if firmware doesn't support it yet.
+      if (await _tryConfigBundle()) {
+        _error = null;
+      } else {
+        await _readConfigsIndividually();
+        _error = null;
+      }
+    } catch (e) {
+      _error = 'Config read error: $e';
+    } finally {
+      _loading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Attempt to load all configs via CONFIG_BUNDLE.
+  /// Returns true on success, false if the firmware doesn't support it.
+  Future<bool> _tryConfigBundle() async {
+    try {
       final response = await _bleService.sendRequest(
         TlvRequestBuilder.readRequest(ProtocolTag.configBundle),
       );
-      
+
       if (response.tag == ProtocolTag.configBundle) {
         final bundle = response.asConfigBundle;
-        
-        // Update all config values at once
         _state = _state.copyWith(
           targetOutputVoltage: bundle.targetOutputVoltage,
           maxPowerThreshold: bundle.maxPowerThreshold,
@@ -125,15 +141,45 @@ class PsuStateProvider extends ChangeNotifier {
           spoofedHardwareModel: bundle.spoofedHardwareModel,
           spoofedFirmwareVersion: bundle.spoofedFirmwareVersion,
         );
-        
-        _error = null;
+        return true;
       }
-    } catch (e) {
-      _error = 'Config read error: $e';
-    } finally {
-      _loading = false;
-      notifyListeners();
+
+      // Got an error response (e.g. ERROR_INVALID_TAG) — not supported
+      return false;
+    } catch (_) {
+      // Timeout or other error — not supported
+      return false;
     }
+  }
+
+  /// Fallback: read each config value individually (15 sequential requests).
+  Future<void> _readConfigsIndividually() async {
+    // Float32 configs
+    _state = _state.copyWith(
+      targetOutputVoltage: await _readFloat(ProtocolTag.psuTargetOutputVoltage),
+      maxPowerThreshold: await _readFloat(ProtocolTag.maxPsuOutputPowerThreshold),
+      targetInletTemperature: await _readFloat(ProtocolTag.targetPsuInletTemperature),
+      powerFaultTimeout: await _readFloat(ProtocolTag.powerFaultTimeout),
+      otpThreshold: await _readFloat(ProtocolTag.psuOtpThreshold),
+    );
+
+    // Uint8 / boolean configs
+    _state = _state.copyWith(
+      maxPowerShutoffEnable: await _readBool(ProtocolTag.psuMaxPowerShutoffEnable),
+      thermostatEnable: await _readBool(ProtocolTag.psuThermostatEnable),
+      silenceFanEnable: await _readBool(ProtocolTag.psuSilenceFanEnable),
+      outputEnable: await _readBool(ProtocolTag.psuOutputEnable),
+      voltageRegulationEnable: await _readBool(ProtocolTag.psuVoltageRegulationEnable),
+      spoofAboveMaxVoltageEnable: await _readBool(ProtocolTag.spoofAboveMaxOutputVoltageEnable),
+      autoRetryAfterFaultEnable: await _readBool(ProtocolTag.automaticRetryAfterPowerFaultEnable),
+      otpEnable: await _readBool(ProtocolTag.psuOtpEnable),
+    );
+
+    // Uint8 non-boolean configs
+    _state = _state.copyWith(
+      spoofedHardwareModel: await _readUint8(ProtocolTag.spoofedPsuHardwareModel),
+      spoofedFirmwareVersion: await _readUint8(ProtocolTag.spoofedPsuFirmwareVersion),
+    );
   }
 
   Future<double> _readFloat(int tag) async {

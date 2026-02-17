@@ -25,25 +25,30 @@ class BleService {
   StreamSubscription<List<int>>? _notifySub;
   StreamSubscription<BluetoothConnectionState>? _connectionSub;
 
-  /// Cached Bluetooth adapter state for faster scan button response
-  BluetoothAdapterState? _cachedAdapterState;
+  /// Continuously updated Bluetooth adapter state for faster scan response
+  BluetoothAdapterState _cachedAdapterState = BluetoothAdapterState.unknown;
+  StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
 
   /// Completer that gets completed when a notification arrives.
   Completer<Uint8List>? _responseCompleter;
 
-  /// Constructor that proactively warms up the Bluetooth adapter state
+  /// Constructor that continuously monitors the Bluetooth adapter state
   BleService() {
-    _warmUpAdapterState();
+    _startAdapterStateMonitor();
   }
 
-  /// Proactively check and cache Bluetooth adapter state in the background.
-  /// This reduces scan button delay from ~3s to ~500ms.
-  void _warmUpAdapterState() {
-    FlutterBluePlus.adapterState.first.then((state) {
-      _cachedAdapterState = state;
-    }).catchError((_) {
-      // Silently fail - will fall back to real-time check
-    });
+  /// Listen to adapter state changes so we always have the latest state cached.
+  /// On iOS the first event is typically 'unknown', then 'on' once CoreBluetooth
+  /// finishes initializing.  By listening continuously the cache reflects the
+  /// real state by the time the user taps Scan.
+  void _startAdapterStateMonitor() {
+    try {
+      _adapterStateSub = FlutterBluePlus.adapterState.listen((state) {
+        _cachedAdapterState = state;
+      });
+    } catch (_) {
+      // Platform not supported (e.g. tests) — ignore
+    }
   }
 
   BleConnectionState _state = BleConnectionState.disconnected;
@@ -68,21 +73,18 @@ class BleService {
   bool get isScanning => FlutterBluePlus.isScanningNow;
 
   Future<void> startScan({Duration timeout = const Duration(seconds: 5)}) async {
-    BluetoothAdapterState adapterState;
+    BluetoothAdapterState adapterState = _cachedAdapterState;
     
-    // Use cached state if available and not unknown
-    if (_cachedAdapterState != null && 
-        _cachedAdapterState != BluetoothAdapterState.unknown) {
-      adapterState = _cachedAdapterState!;
-    } else {
-      // Otherwise wait for adapter to be ready (with reduced timeout)
+    // If the cached state is still unknown, give the adapter a short window
+    // to become ready (up to 3 seconds).  The continuous listener will have
+    // already resolved this in most cases, so this is just a safety net.
+    if (adapterState == BluetoothAdapterState.unknown) {
       adapterState = await FlutterBluePlus.adapterState
           .firstWhere((state) => state != BluetoothAdapterState.unknown)
           .timeout(
-            const Duration(milliseconds: 1500), // Reduced from 3000ms
+            const Duration(seconds: 3),
             onTimeout: () => BluetoothAdapterState.unknown,
           );
-      _cachedAdapterState = adapterState;
     }
     
     if (adapterState == BluetoothAdapterState.unknown) {
@@ -245,6 +247,7 @@ class BleService {
   }
 
   void dispose() {
+    _adapterStateSub?.cancel();
     _cleanup();
     _stateController.close();
   }
