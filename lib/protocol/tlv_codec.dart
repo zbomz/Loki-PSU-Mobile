@@ -85,13 +85,13 @@ class ConfigBundle {
   final bool maxPowerShutoffEnable;
   final bool thermostatEnable;
   final bool silenceFanEnable;
+  final int spoofedHardwareModel;
+  final int spoofedFirmwareVersion;
   final bool outputEnable;
   final bool voltageRegulationEnable;
   final bool spoofAboveMaxVoltageEnable;
   final bool autoRetryAfterFaultEnable;
   final bool otpEnable;
-  final int spoofedHardwareModel;
-  final int spoofedFirmwareVersion;
 
   ConfigBundle({
     required this.targetOutputVoltage,
@@ -102,13 +102,13 @@ class ConfigBundle {
     required this.maxPowerShutoffEnable,
     required this.thermostatEnable,
     required this.silenceFanEnable,
+    required this.spoofedHardwareModel,
+    required this.spoofedFirmwareVersion,
     required this.outputEnable,
     required this.voltageRegulationEnable,
     required this.spoofAboveMaxVoltageEnable,
     required this.autoRetryAfterFaultEnable,
     required this.otpEnable,
-    required this.spoofedHardwareModel,
-    required this.spoofedFirmwareVersion,
   });
 
   factory ConfigBundle.fromBytes(Uint8List bytes) {
@@ -122,13 +122,13 @@ class ConfigBundle {
         maxPowerShutoffEnable: false,
         thermostatEnable: false,
         silenceFanEnable: false,
+        spoofedHardwareModel: 0,
+        spoofedFirmwareVersion: 0,
         outputEnable: false,
         voltageRegulationEnable: false,
         spoofAboveMaxVoltageEnable: false,
         autoRetryAfterFaultEnable: false,
         otpEnable: false,
-        spoofedHardwareModel: 0,
-        spoofedFirmwareVersion: 0,
       );
     }
     final bd = ByteData.sublistView(bytes);
@@ -139,18 +139,18 @@ class ConfigBundle {
       targetInletTemperature: bd.getFloat32(8, Endian.little),
       powerFaultTimeout: bd.getFloat32(12, Endian.little),
       otpThreshold: bd.getFloat32(16, Endian.little),
-      // Uint8 boolean configs (bytes 20-27)
+      // Uint8 configs (bytes 20-29) — ordered by tag, matching firmware wire layout:
+      // 0x11 0x13 0x15 0x16 0x17 0x18 0x19 0x1A 0x1C 0x1E
       maxPowerShutoffEnable: bytes[20] != 0,
       thermostatEnable: bytes[21] != 0,
       silenceFanEnable: bytes[22] != 0,
-      outputEnable: bytes[23] != 0,
-      voltageRegulationEnable: bytes[24] != 0,
-      spoofAboveMaxVoltageEnable: bytes[25] != 0,
-      autoRetryAfterFaultEnable: bytes[26] != 0,
-      otpEnable: bytes[27] != 0,
-      // Uint8 non-boolean configs (bytes 28-29)
-      spoofedHardwareModel: bytes[28],
-      spoofedFirmwareVersion: bytes[29],
+      spoofedHardwareModel: bytes[23],        // tag 0x16
+      spoofedFirmwareVersion: bytes[24],      // tag 0x17
+      outputEnable: bytes[25] != 0,           // tag 0x18
+      voltageRegulationEnable: bytes[26] != 0,
+      spoofAboveMaxVoltageEnable: bytes[27] != 0,
+      autoRetryAfterFaultEnable: bytes[28] != 0,
+      otpEnable: bytes[29] != 0,
     );
   }
 }
