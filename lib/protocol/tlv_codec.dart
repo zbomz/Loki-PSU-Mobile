@@ -112,12 +112,7 @@ class ConfigBundle {
   });
 
   factory ConfigBundle.fromBytes(Uint8List bytes) {
-    // Minimum bytes we actually read: 5 floats (20 B) + 10 uint8s (10 B) = 30.
-    // configBundleValueSize (45) includes reserved padding the firmware may
-    // omit, so only require the 30 data bytes we actually index into.
-    const minDataBytes =
-        TlvConstants.configBundleFloatCount * 4 + TlvConstants.configBundleUint8Count;
-    if (bytes.length < minDataBytes) {
+    if (bytes.length < TlvConstants.configBundleValueSize) {
       return ConfigBundle(
         targetOutputVoltage: 0.0,
         maxPowerThreshold: 0.0,
