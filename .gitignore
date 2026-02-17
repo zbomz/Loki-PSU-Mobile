@@ -13,6 +13,16 @@ android/gradle.properties
 ios/Podfile.lock
 lib/generated_plugin_registrant.dart
 
+# Secrets & Certificates
+certificate_p12_base64.txt
+mobileprovision_base64.txt
+*.key
+*.p12
+*.pem
+*.cer
+*.csr
+*.mobileprovision
+
 # IDE
 .vscode/
 .idea/
