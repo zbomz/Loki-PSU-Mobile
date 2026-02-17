@@ -125,7 +125,10 @@ class _ScanScreenState extends State<ScanScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: ble.isScanning ? ble.stopScan : ble.startScan,
+        // Disable scan button until Bluetooth adapter is ready
+        onPressed: _adapterState == BluetoothAdapterState.on || ble.isScanning
+            ? (ble.isScanning ? ble.stopScan : ble.startScan)
+            : null,
         icon: Icon(ble.isScanning ? Icons.stop : Icons.bluetooth_searching),
         label: Text(ble.isScanning ? 'Stop' : 'Scan'),
       ),

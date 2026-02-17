@@ -43,9 +43,14 @@ class BleService {
   /// real state by the time the user taps Scan.
   void _startAdapterStateMonitor() {
     try {
-      _adapterStateSub = FlutterBluePlus.adapterState.listen((state) {
-        _cachedAdapterState = state;
-      });
+      _adapterStateSub = FlutterBluePlus.adapterState.listen(
+        (state) {
+          _cachedAdapterState = state;
+        },
+        onError: (_) {
+          // Platform not supported (e.g. tests) — ignore
+        },
+      );
     } catch (_) {
       // Platform not supported (e.g. tests) — ignore
     }
