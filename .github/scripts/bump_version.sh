@@ -31,8 +31,9 @@ NEW_VERSION="${VERSION_NUMBER}+${NEW_BUILD_NUMBER}"
 
 echo "New version: $NEW_VERSION"
 
-# Update pubspec.yaml
-sed -i "s/version: ${CURRENT_VERSION}/version: ${NEW_VERSION}/" $PUBSPEC_FILE
+# Update pubspec.yaml (use -i.bak for cross-platform compat: GNU + BSD sed)
+sed -i.bak "s/version: ${CURRENT_VERSION}/version: ${NEW_VERSION}/" $PUBSPEC_FILE
+rm -f "${PUBSPEC_FILE}.bak"
 
 echo "✅ Version bumped from $CURRENT_VERSION to $NEW_VERSION"
 
