@@ -66,15 +66,20 @@ jobs:
         cp $PROVISIONING_PROFILE_PATH ~/Library/MobileDevice/Provisioning\ Profiles/$PROFILE_UUID.mobileprovision
 
     - name: Build iOS (Release - Signed)
+      run: flutter build ios --release
+
+    - name: Package IPA
       run: |
-        flutter build ipa --release \
-          --export-options-plist=ios/ExportOptions.plist
+        cd build/ios/iphoneos
+        mkdir -p Payload
+        cp -r Runner.app Payload/
+        zip -r loki-psu-signed.ipa Payload
 
     - name: Upload Signed IPA
       uses: actions/upload-artifact@v4
       with:
         name: loki-psu-ios-signed
-        path: build/ios/ipa/*.ipa
+        path: build/ios/iphoneos/loki-psu-signed.ipa
         retention-days: 30
 
     - name: Cleanup
