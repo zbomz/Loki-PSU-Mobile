@@ -1,0 +1,98 @@
+name: Build and Deploy iOS
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.0'
+        channel: 'stable'
+
+    - name: Get dependencies
+      run: flutter pub get
+
+    - name: Analyze code
+      run: flutter analyze
+
+    - name: Run tests
+      run: flutter test
+
+    - name: Build iOS
+      run: flutter build ios --release --no-codesign
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ios-build
+        path: build/ios/iphoneos/Runner.app
+
+  deploy-testflight:
+    needs: build-ios
+    runs-on: macos-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: ios-build
+        path: build/ios/iphoneos/
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.0'
+        channel: 'stable'
+
+    # Note: You'll need to configure these secrets in your GitHub repository
+    # APP_STORE_CONNECT_PRIVATE_KEY: Your App Store Connect API key
+    # APP_STORE_CONNECT_KEY_ID: Key ID for the API key
+    # APP_STORE_CONNECT_ISSUER_ID: Issuer ID for the API key
+    # APPLE_ID: Your Apple ID
+    # APPLE_APP_SPECIFIC_PASSWORD: App-specific password for your Apple ID
+
+    - name: Deploy to TestFlight
+      run: |
+        # Install fastlane if not present
+        gem install fastlane
+
+        # Create basic Fastfile for TestFlight deployment
+        mkdir -p fastlane
+        cat > fastlane/Fastfile << EOF
+        lane :beta do
+          build_app(
+            scheme: "Runner",
+            export_method: "app-store",
+            export_options: {
+              provisioningProfiles: {
+                "com.example.loki-psu" => "Loki PSU App Store Profile"
+              }
+            }
+          )
+          upload_to_testflight
+        end
+        EOF
+
+        # Run fastlane to deploy
+        fastlane beta
+      env:
+        APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        FASTLANE_USER: ${{ secrets.APPLE_ID }}
+        FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
