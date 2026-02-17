@@ -30,8 +30,8 @@ jobs:
 
     - name: Install Apple Certificate and Provisioning Profile
       env:
-        IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE }}
-        IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERT }}
+        IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
         IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE }}
       run: |
         # Create temporary keychain
