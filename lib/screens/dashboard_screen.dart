@@ -68,14 +68,14 @@ class DashboardScreen extends StatelessWidget {
                     ],
 
                     // ---- Telemetry ----
-                    _SectionHeader(title: 'Telemetry'),
+                    const _SectionHeader(title: 'Telemetry'),
                     const SizedBox(height: 4),
                     _TelemetryGrid(psu: psu),
 
                     const SizedBox(height: 20),
 
                     // ---- Configuration — Toggles ----
-                    _SectionHeader(title: 'Configuration — Toggles'),
+                    const _SectionHeader(title: 'Configuration — Toggles'),
                     const SizedBox(height: 4),
                     _BoolConfigTile(
                       label: 'PSU Output Enable',
@@ -129,7 +129,7 @@ class DashboardScreen extends StatelessWidget {
                     const SizedBox(height: 20),
 
                     // ---- Configuration — Float values ----
-                    _SectionHeader(title: 'Configuration — Values'),
+                    const _SectionHeader(title: 'Configuration — Values'),
                     const SizedBox(height: 4),
                     _FloatConfigTile(
                       label: 'Target Output Voltage',
@@ -170,7 +170,7 @@ class DashboardScreen extends StatelessWidget {
                     const SizedBox(height: 20),
 
                     // ---- Configuration — Uint8 selectors ----
-                    _SectionHeader(title: 'Configuration — Model / FW'),
+                    const _SectionHeader(title: 'Configuration — Model / FW'),
                     const SizedBox(height: 4),
                     _Uint8ConfigTile(
                       label: 'Spoofed HW Model',
@@ -188,7 +188,7 @@ class DashboardScreen extends StatelessWidget {
                     const SizedBox(height: 20),
 
                     // ---- Commands ----
-                    _SectionHeader(title: 'Commands'),
+                    const _SectionHeader(title: 'Commands'),
                     const SizedBox(height: 4),
                     Card(
                       child: ListTile(
@@ -244,7 +244,7 @@ class _ConnectionChip extends StatelessWidget {
     };
     return Chip(
       label: Text(label, style: const TextStyle(fontSize: 12)),
-      backgroundColor: color.withOpacity(0.2),
+      backgroundColor: color.withValues(alpha: 0.2),
       side: BorderSide(color: color),
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,

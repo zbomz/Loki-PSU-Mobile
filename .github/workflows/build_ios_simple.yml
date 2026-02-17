@@ -28,8 +28,36 @@ jobs:
     - name: Run tests
       run: flutter test
 
+    - name: Create iOS certificates and profiles directory
+      run: |
+        mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+
+    # Note: You'll need to add these secrets to your GitHub repository:
+    # IOS_CERTIFICATE: Base64 encoded .p12 certificate file
+    # IOS_CERTIFICATE_PASSWORD: Password for the certificate
+    # IOS_PROVISIONING_PROFILE: Base64 encoded provisioning profile
+
+    - name: Import certificate
+      if: env.IOS_CERTIFICATE != ''
+      run: |
+        echo "${{ secrets.IOS_CERTIFICATE }}" | base64 --decode > certificate.p12
+        security create-keychain -p "" build.keychain
+        security import certificate.p12 -k build.keychain -P "${{ secrets.IOS_CERTIFICATE_PASSWORD }}" -T /usr/bin/codesign
+        security set-key-partition-list -S apple-tool:,apple: -k "" build.keychain
+        security default-keychain -s build.keychain
+
+    - name: Import provisioning profile
+      if: env.IOS_PROVISIONING_PROFILE != ''
+      run: |
+        echo "${{ secrets.IOS_PROVISIONING_PROFILE }}" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/build_pp.mobileprovision
+
     - name: Build iOS (Debug)
-      run: flutter build ios --debug --no-codesign
+      run: |
+        if [ -n "${{ secrets.IOS_CERTIFICATE }}" ]; then
+          flutter build ios --debug --release
+        else
+          flutter build ios --debug --no-codesign
+        fi
 
     - name: Package app for distribution
       run: |
@@ -46,7 +74,12 @@ jobs:
         retention-days: 30
 
     - name: Build iOS (Release)
-      run: flutter build ios --release --no-codesign
+      run: |
+        if [ -n "${{ secrets.IOS_CERTIFICATE }}" ]; then
+          flutter build ios --release
+        else
+          flutter build ios --release --no-codesign
+        fi
 
     - name: Package release app
       run: |

@@ -49,11 +49,13 @@ flutter run -d web-server
 
 ## Installation Methods:
 
-### Using Diawi (Free):
+### Using Diawi (Requires Apple Developer Account):
 1. Go to [diawi.com](https://www.diawi.com)
-2. Upload your IPA file
+2. Upload your IPA file (must be properly signed)
 3. Get QR code/install link
 4. Open on your iPhone to install
+
+**Note**: Diawi requires properly signed IPAs, so you'll need an Apple Developer account for this to work.
 
 ### Using Appetize.io:
 1. Go to [appetize.io](https://appetize.io)
