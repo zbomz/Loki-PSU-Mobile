@@ -34,6 +34,9 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   ProvisioningResult? _result;
   bool _provisioning = false;
 
+  bool _isScanning = false;
+  String? _scanError;
+
   @override
   void initState() {
     super.initState();
@@ -52,14 +55,31 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
     final wifi = context.read<WiFiProvider>();
     final service = wifi.provisioningService;
 
+    setState(() {
+      _isScanning = true;
+      _scanError = null;
+      _provDevices = [];
+    });
+
     _scanSub?.cancel();
     _scanSub = service
         .scanForProvisionableDevices(timeout: const Duration(seconds: 10))
-        .listen((results) {
-      if (mounted) {
-        setState(() => _provDevices = results);
-      }
-    });
+        .listen(
+      (results) {
+        if (mounted) setState(() => _provDevices = results);
+      },
+      onError: (Object e) {
+        if (mounted) {
+          setState(() {
+            _isScanning = false;
+            _scanError = e.toString().replaceFirst('Exception: ', '');
+          });
+        }
+      },
+      onDone: () {
+        if (mounted) setState(() => _isScanning = false);
+      },
+    );
   }
 
   @override
@@ -85,7 +105,7 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
             ),
             const SizedBox(height: 8),
 
-            if (_provDevices.isEmpty)
+            if (_isScanning && _provDevices.isEmpty)
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
@@ -95,6 +115,52 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                       const SizedBox(height: 16),
                       Text(
                         'Scanning for Loki PSU provisioning devices...',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else if (_scanError != null)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    children: [
+                      const Icon(Icons.bluetooth_disabled,
+                          size: 40, color: Colors.red),
+                      const SizedBox(height: 16),
+                      Text(
+                        _scanError!,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium!
+                            .copyWith(color: Colors.red),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 8),
+                      TextButton.icon(
+                        onPressed: _startScan,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else if (_provDevices.isEmpty)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    children: [
+                      const Icon(Icons.wifi_off, size: 40),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No provisioning devices found.\n'
+                        'Ensure the Loki PSU is in provisioning mode'
+                        ' (advertising as PROV_LOKI_…).',
                         style: Theme.of(context).textTheme.bodyMedium,
                         textAlign: TextAlign.center,
                       ),

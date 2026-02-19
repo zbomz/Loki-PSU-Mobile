@@ -27,6 +27,28 @@ class RainMakerConstants {
   /// BLE provisioning service name prefix.
   static const String provServicePrefix = 'PROV_LOKI_';
 
+  // ---- OAuth / Cognito constants ----
+  /// Cognito App Client ID for the public Espressif-hosted RainMaker cloud.
+  /// Source: espressif/esp-rainmaker-ios → Configuration.plist (AWS Configuration)
+  static const String cognitoClientId = '1h7ujqjs8140n17v0ahb4n51m2';
+
+  /// Cognito Hosted UI base URL for the public RainMaker cloud (no trailing slash).
+  /// Source: espressif/esp-rainmaker-ios → Configuration.plist (Authentication URL)
+  static const String cognitoDomain = 'https://3pauth.rainmaker.espressif.com';
+
+  /// Redirect URI registered with the Cognito app client.
+  /// Must exactly match what is registered in the Cognito app client's Allowed
+  /// Callback URLs.  The official ESP RainMaker app client uses this URI.
+  static const String oauthRedirectUri =
+      'com.espressif.rainmaker.softap://success';
+
+  /// URL scheme portion of [oauthRedirectUri], used by flutter_web_auth_2
+  /// and platform intent/URL-scheme registrations.
+  static const String oauthCallbackScheme = 'com.espressif.rainmaker.softap';
+
+  /// OAuth scopes requested from Cognito.
+  static const String oauthScopes = 'openid email profile';
+
   // ---- Secure storage keys ----
   static const String accessTokenKey = 'rm_access_token';
   static const String refreshTokenKey = 'rm_refresh_token';

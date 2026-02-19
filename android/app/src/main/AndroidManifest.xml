@@ -31,6 +31,17 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- OAuth redirect handler for social sign-in (flutter_web_auth_2).
+                 Scheme matches the redirect URI registered with the ESP RainMaker
+                 Cognito app client: com.espressif.rainmaker.softap://success -->
+            <intent-filter android:label="oauth_redirect">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="com.espressif.rainmaker.softap"
+                    android:host="success" />
+            </intent-filter>
         </activity>
         <meta-data
             android:name="flutterEmbedding"

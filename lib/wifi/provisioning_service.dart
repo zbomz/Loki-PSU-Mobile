@@ -61,18 +61,65 @@ class ProvisioningService {
 
   /// Scan for ESP32 devices advertising the provisioning service.
   ///
-  /// Returns scan results whose device name starts with `PROV_LOKI_`.
+  /// Returns a stream of filtered scan results whose device name starts with
+  /// `PROV_LOKI_`. The stream closes automatically when [timeout] elapses.
+  /// Any error (BT off, permission denied, conflicting scan) is forwarded
+  /// through the stream so callers can surface it in the UI.
   Stream<List<ScanResult>> scanForProvisionableDevices({
     Duration timeout = const Duration(seconds: 10),
   }) {
     _setStep(ProvisioningStep.scanning);
-    FlutterBluePlus.startScan(timeout: timeout);
-    return FlutterBluePlus.scanResults.map((results) {
-      return results.where((r) {
-        final name = r.device.platformName;
-        return name.startsWith(RainMakerConstants.provServicePrefix);
-      }).toList();
-    });
+
+    final controller = StreamController<List<ScanResult>>();
+
+    Future<void> _run() async {
+      try {
+        // Stop any in-progress scan to avoid conflicts with the main BLE scan.
+        await FlutterBluePlus.stopScan();
+
+        // Guard: wait for the adapter to be ready (mirrors BleService.startScan).
+        final adapterState = await FlutterBluePlus.adapterState
+            .firstWhere((s) => s != BluetoothAdapterState.unknown)
+            .timeout(
+              const Duration(seconds: 3),
+              onTimeout: () => BluetoothAdapterState.unknown,
+            );
+
+        if (adapterState != BluetoothAdapterState.on) {
+          throw Exception(
+            'Bluetooth is not ready. Current state: ${adapterState.name}',
+          );
+        }
+
+        // Subscribe to results *before* starting the scan so no packet is missed.
+        final sub = FlutterBluePlus.scanResults.listen(
+          (results) {
+            final filtered = results.where((r) {
+              return r.device.platformName
+                  .startsWith(RainMakerConstants.provServicePrefix);
+            }).toList();
+            if (!controller.isClosed) controller.add(filtered);
+          },
+          onError: (Object e) {
+            if (!controller.isClosed) controller.addError(e);
+          },
+        );
+
+        // Await startScan so any startup error surfaces as an exception
+        // rather than being silently swallowed.
+        await FlutterBluePlus.startScan(timeout: timeout);
+
+        // startScan future completes once the timeout has elapsed.
+        await sub.cancel();
+      } catch (e) {
+        if (!controller.isClosed) controller.addError(e);
+      } finally {
+        if (!controller.isClosed) controller.close();
+      }
+    }
+
+    _run(); // errors travel through the StreamController
+    return controller.stream;
   }
 
   Future<void> stopScan() async {

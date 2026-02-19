@@ -128,7 +128,8 @@ class PsuStateProvider extends ChangeNotifier {
         TlvRequestBuilder.readRequest(ProtocolTag.configBundle),
       );
 
-      if (response.tag == ProtocolTag.configBundle) {
+      if (response.tag == ProtocolTag.configBundle &&
+          response.value.length >= TlvConstants.configBundleValueSize) {
         final bundle = response.asConfigBundle;
         _state = _state.copyWith(
           targetOutputVoltage: bundle.targetOutputVoltage,
@@ -150,10 +151,17 @@ class PsuStateProvider extends ChangeNotifier {
         return true;
       }
 
-      // Got an error response (e.g. ERROR_INVALID_TAG) — not supported
+      // Got an unexpected response (wrong tag, error, or undersized value) —
+      // fall back to individual reads.
+      debugPrint(
+        'CONFIG_BUNDLE: unexpected tag=0x${response.tag.toRadixString(16)} '
+        'or value length=${response.value.length} '
+        '(expected ${TlvConstants.configBundleValueSize}), falling back to individual reads',
+      );
       return false;
-    } catch (_) {
-      // Timeout or other error — not supported
+    } catch (e) {
+      // Timeout, CRC error, or parse failure — not supported / malformed.
+      debugPrint('CONFIG_BUNDLE: exception during bundle read ($e), falling back');
       return false;
     }
   }
@@ -190,16 +198,34 @@ class PsuStateProvider extends ChangeNotifier {
 
   Future<double> _readFloat(int tag) async {
     final resp = await _bleService.sendRequest(TlvRequestBuilder.readRequest(tag));
+    if (resp.isError) {
+      throw FormatException(
+        'Read tag 0x${tag.toRadixString(16)} failed: '
+        'firmware error 0x${resp.errorCode.toRadixString(16)}',
+      );
+    }
     return resp.asFloat;
   }
 
   Future<bool> _readBool(int tag) async {
     final resp = await _bleService.sendRequest(TlvRequestBuilder.readRequest(tag));
+    if (resp.isError) {
+      throw FormatException(
+        'Read tag 0x${tag.toRadixString(16)} failed: '
+        'firmware error 0x${resp.errorCode.toRadixString(16)}',
+      );
+    }
     return resp.asUint8 != 0;
   }
 
   Future<int> _readUint8(int tag) async {
     final resp = await _bleService.sendRequest(TlvRequestBuilder.readRequest(tag));
+    if (resp.isError) {
+      throw FormatException(
+        'Read tag 0x${tag.toRadixString(16)} failed: '
+        'firmware error 0x${resp.errorCode.toRadixString(16)}',
+      );
+    }
     return resp.asUint8;
   }
 

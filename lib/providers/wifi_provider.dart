@@ -135,6 +135,36 @@ class WiFiProvider extends ChangeNotifier {
     }
   }
 
+  /// Sign in with Google via the Cognito Hosted UI.
+  Future<void> loginWithGoogle() => _loginWithSocial('Google');
+
+  /// Sign in with GitHub via the Cognito Hosted UI.
+  Future<void> loginWithGitHub() => _loginWithSocial('GitHub');
+
+  /// Sign in with Apple via the Cognito Hosted UI (iOS only).
+  Future<void> loginWithApple() => _loginWithSocial('SignInWithApple');
+
+  /// Shared implementation for all social login flows.
+  Future<void> _loginWithSocial(String provider) async {
+    _authLoading = true;
+    _authError = null;
+    notifyListeners();
+
+    try {
+      await _api.loginWithSocialProvider(provider);
+      _loggedIn = true;
+      _userEmail = _api.userEmail;
+      await _refreshNodeList();
+    } on RainMakerApiException catch (e) {
+      _authError = e.message;
+    } catch (e) {
+      _authError = 'Sign-in failed: $e';
+    } finally {
+      _authLoading = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> logout() async {
     stopCloudPolling();
     await _api.logout();

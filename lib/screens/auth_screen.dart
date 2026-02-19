@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -192,6 +194,58 @@ class _AuthScreenState extends State<AuthScreen> {
                     ? 'Already have an account? Sign In'
                     : 'Need an account? Sign Up'),
               ),
+
+              // ---- Social / OAuth login ----
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Expanded(child: Divider()),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Text(
+                      'OR',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          ),
+                    ),
+                  ),
+                  const Expanded(child: Divider()),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // Google
+              _SocialSignInButton(
+                label: 'Continue with Google',
+                icon: Icons.g_mobiledata,
+                onPressed: wifi.authLoading
+                    ? null
+                    : () => _loginWithSocial(wifi.loginWithGoogle),
+              ),
+              const SizedBox(height: 10),
+
+              // GitHub
+              _SocialSignInButton(
+                label: 'Continue with GitHub',
+                icon: Icons.code,
+                onPressed: wifi.authLoading
+                    ? null
+                    : () => _loginWithSocial(wifi.loginWithGitHub),
+              ),
+
+              // Apple — shown only on iOS
+              if (Platform.isIOS) ...[
+                const SizedBox(height: 10),
+                _SocialSignInButton(
+                  label: 'Continue with Apple',
+                  icon: Icons.apple,
+                  onPressed: wifi.authLoading
+                      ? null
+                      : () => _loginWithSocial(wifi.loginWithApple),
+                ),
+              ],
             ],
           ],
         ),
@@ -229,6 +283,16 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
+  /// Invokes a social login callback and navigates away on success.
+  Future<void> _loginWithSocial(Future<void> Function() loginFn) async {
+    final wifi = context.read<WiFiProvider>();
+    await loginFn();
+    if (!mounted) return;
+    if (wifi.isLoggedIn) {
+      Navigator.of(context).pop();
+    }
+  }
+
   Future<void> _confirmAccount() async {
     final email = _emailController.text.trim();
     final code = _codeController.text.trim();
@@ -249,5 +313,32 @@ class _AuthScreenState extends State<AuthScreen> {
     } catch (_) {
       // Error is handled by the provider
     }
+  }
+}
+
+/// A styled outlined button used for social / OAuth sign-in options.
+class _SocialSignInButton extends StatelessWidget {
+  const _SocialSignInButton({
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 22),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size.fromHeight(48),
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+      ),
+    );
   }
 }

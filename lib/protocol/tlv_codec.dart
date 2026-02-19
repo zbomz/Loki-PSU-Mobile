@@ -113,22 +113,9 @@ class ConfigBundle {
 
   factory ConfigBundle.fromBytes(Uint8List bytes) {
     if (bytes.length < TlvConstants.configBundleValueSize) {
-      return ConfigBundle(
-        targetOutputVoltage: 0.0,
-        maxPowerThreshold: 0.0,
-        targetInletTemperature: 0.0,
-        powerFaultTimeout: 0.0,
-        otpThreshold: 0.0,
-        maxPowerShutoffEnable: false,
-        thermostatEnable: false,
-        silenceFanEnable: false,
-        spoofedHardwareModel: 0,
-        spoofedFirmwareVersion: 0,
-        outputEnable: false,
-        voltageRegulationEnable: false,
-        spoofAboveMaxVoltageEnable: false,
-        autoRetryAfterFaultEnable: false,
-        otpEnable: false,
+      throw FormatException(
+        'ConfigBundle payload too short: ${bytes.length} bytes, '
+        'expected ${TlvConstants.configBundleValueSize}',
       );
     }
     final bd = ByteData.sublistView(bytes);

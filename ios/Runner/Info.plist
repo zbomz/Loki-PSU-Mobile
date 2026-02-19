@@ -52,5 +52,20 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+	<!-- Custom URL scheme for OAuth redirect (flutter_web_auth_2 / social sign-in).
+	     Matches the redirect URI registered with the ESP RainMaker Cognito app client:
+	     com.espressif.rainmaker.softap://success -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.espressif.rainmaker.softap</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

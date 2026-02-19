@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/psu_state.dart';
@@ -152,6 +153,98 @@ class RainMakerApiClient {
     _userEmail = email;
     await _storage.write(
         key: RainMakerConstants.userEmailKey, value: email);
+  }
+
+  /// Sign in via a social identity provider through the Cognito Hosted UI.
+  ///
+  /// [identityProvider] must be one of: `'Google'`, `'GitHub'`,
+  /// `'SignInWithApple'` — these are the Cognito identity provider names.
+  ///
+  /// Opens a system browser to the Cognito Hosted UI, waits for the OAuth
+  /// redirect, exchanges the authorization code for Cognito tokens, and
+  /// persists them exactly as the password-based [login] does.
+  ///
+  /// Throws [RainMakerApiException] on any failure.
+  Future<void> loginWithSocialProvider(String identityProvider) async {
+    // 1. Build the Cognito Hosted UI authorization URL.
+    final authUri = Uri.parse(
+      '${RainMakerConstants.cognitoDomain}/oauth2/authorize'
+      '?response_type=code'
+      '&client_id=${RainMakerConstants.cognitoClientId}'
+      '&redirect_uri=${Uri.encodeComponent(RainMakerConstants.oauthRedirectUri)}'
+      '&identity_provider=$identityProvider'
+      '&scope=${Uri.encodeComponent(RainMakerConstants.oauthScopes)}',
+    );
+
+    // 2. Open the browser and wait for the OAuth redirect.
+    final String redirectResult;
+    try {
+      redirectResult = await FlutterWebAuth2.authenticate(
+        url: authUri.toString(),
+        callbackUrlScheme: RainMakerConstants.oauthCallbackScheme,
+      );
+    } catch (e) {
+      throw RainMakerApiException('Social sign-in was cancelled or failed: $e', 0);
+    }
+
+    // 3. Extract the authorization code from the redirect URI.
+    final redirectUri = Uri.parse(redirectResult);
+    final code = redirectUri.queryParameters['code'];
+    if (code == null || code.isEmpty) {
+      final error = redirectUri.queryParameters['error_description'] ??
+          redirectUri.queryParameters['error'] ??
+          'No authorization code received';
+      throw RainMakerApiException(error, 0);
+    }
+
+    // 4. Exchange the authorization code for Cognito tokens.
+    final tokenUri =
+        Uri.parse('${RainMakerConstants.cognitoDomain}/oauth2/token');
+    final tokenResponse = await _http.post(
+      tokenUri,
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: {
+        'grant_type': 'authorization_code',
+        'client_id': RainMakerConstants.cognitoClientId,
+        'redirect_uri': RainMakerConstants.oauthRedirectUri,
+        'code': code,
+      },
+    );
+
+    if (tokenResponse.statusCode != 200) {
+      final data = jsonDecode(tokenResponse.body);
+      throw RainMakerApiException(
+        data['error_description'] ?? data['error'] ?? 'Token exchange failed',
+        tokenResponse.statusCode,
+      );
+    }
+
+    final tokenData = jsonDecode(tokenResponse.body);
+    await _saveTokens(
+      accessToken: tokenData['access_token'] as String,
+      refreshToken: tokenData['refresh_token'] as String,
+      idToken: tokenData['id_token'] as String,
+    );
+
+    // 5. Attempt to extract user email from the ID token (JWT middle segment).
+    try {
+      final parts = (tokenData['id_token'] as String).split('.');
+      if (parts.length == 3) {
+        final payload = String.fromCharCodes(
+          base64Url.decode(base64Url.normalize(parts[1])),
+        );
+        final claims = jsonDecode(payload) as Map<String, dynamic>;
+        final email =
+            claims['email'] as String? ?? claims['cognito:username'] as String?;
+        if (email != null) {
+          _userEmail = email;
+          await _storage.write(
+              key: RainMakerConstants.userEmailKey, value: email);
+        }
+      }
+    } catch (_) {
+      // Email extraction is best-effort; login still succeeds without it.
+    }
   }
 
   /// Refresh the access token using the stored refresh token.
