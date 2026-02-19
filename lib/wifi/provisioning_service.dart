@@ -62,6 +62,12 @@ class ProvisioningService {
   /// AES cipher key derived from Curve25519 shared secret + PoP.
   Uint8List? _cipherKey;
 
+  /// Running byte count into the AES-CTR keystream for this session.
+  /// The ESP Security1 AES-CTR state is stateful across all encrypt/decrypt
+  /// calls within a session; we track the position here so every call starts
+  /// at the correct keystream offset.
+  int _cipherByteCount = 0;
+
   final _stepController = StreamController<ProvisioningStep>.broadcast();
   Stream<ProvisioningStep> get stepStream => _stepController.stream;
 
@@ -190,6 +196,12 @@ class ProvisioningService {
     //                 field 10 (bytes) = CmdScanStart {}
     // CmdScanStart fields: blocking(1)=false(0), passive(2)=false(0),
     //                      group_channels(3)=0, period_ms(4)=120
+    //
+    // All writes to the prov-scan characteristic MUST be encrypted with the
+    // session key established during the Security1 handshake.  The ESP32
+    // protocomm_security1 layer decrypts every incoming byte before parsing.
+    // Likewise, all responses read from the characteristic are encrypted and
+    // must be decrypted before parsing.
     final cmdScanStart = Uint8List.fromList([
       ..._protoVarint(1, 0), // msg type = TypeCmdScanStart
       ..._protoBytes(
@@ -204,7 +216,10 @@ class ProvisioningService {
     ]);
 
     final scanChar = _scanChar ?? _configChar!;
-    await scanChar.write(cmdScanStart.toList(), withoutResponse: false);
+    await scanChar.write(
+      (await _aesCtrEncrypt(cmdScanStart, _cipherKey!)).toList(),
+      withoutResponse: false,
+    );
 
     // ---- 5. Poll until scan is finished ----
     final deadline = DateTime.now().add(scanTimeout);
@@ -215,9 +230,13 @@ class ProvisioningService {
         ..._protoVarint(1, 2), // msg type = TypeCmdScanStatus
         ..._protoBytes(12, Uint8List(0)), // empty CmdScanStatus {}
       ]);
-      await scanChar.write(cmdStatus.toList(), withoutResponse: false);
+      await scanChar.write(
+        (await _aesCtrEncrypt(cmdStatus, _cipherKey!)).toList(),
+        withoutResponse: false,
+      );
 
-      final respRaw = Uint8List.fromList(await scanChar.read());
+      final respEncrypted = Uint8List.fromList(await scanChar.read());
+      final respRaw = await _aesCtrDecrypt(respEncrypted, _cipherKey!);
       // RespScanStatus is at field 13 of WiFiScanPayload
       final respStatus = _protoFindBytes(respRaw, 13);
       if (respStatus != null) {
@@ -254,9 +273,13 @@ class ProvisioningService {
           ]),
         ),
       ]);
-      await scanChar.write(cmdResult.toList(), withoutResponse: false);
+      await scanChar.write(
+        (await _aesCtrEncrypt(cmdResult, _cipherKey!)).toList(),
+        withoutResponse: false,
+      );
 
-      final respRaw = Uint8List.fromList(await scanChar.read());
+      final respEncrypted = Uint8List.fromList(await scanChar.read());
+      final respRaw = await _aesCtrDecrypt(respEncrypted, _cipherKey!);
       // RespScanResult is at field 15 of WiFiScanPayload
       final respResult = _protoFindBytes(respRaw, 15);
       if (respResult == null) continue;
@@ -579,19 +602,25 @@ class ProvisioningService {
       throw StateError('Session key not established');
     }
 
-    // Build the wifi config payload (ssid + passphrase)
-    final configPayload = _buildWifiConfigPayload(ssid, password);
+    // Build the inner CmdSetConfig (ssid + passphrase).
+    final cmdSetConfig = _buildWifiConfigPayload(ssid, password);
 
-    // Encrypt the inner payload
-    final encrypted = await _aesCtrEncrypt(configPayload, _cipherKey!);
+    // Build the full WiFiConfigPayload (type header + inner command) BEFORE
+    // encryption.  The ESP protocomm_security1 layer decrypts the entire
+    // characteristic write as one unit; the type-varint header must therefore
+    // be inside the encrypted blob, not left as a plaintext wrapper.
+    final fullPayload = Uint8List.fromList([
+      ..._protoVarint(1, 2),         // msg type = TypeCmdSetConfig
+      ..._protoBytes(12, cmdSetConfig), // CmdSetConfig body
+    ]);
 
-    // Wrap in the config message envelope
-    final configMsg = _buildConfigMessage(encrypted);
-    await _configChar!.write(configMsg.toList(), withoutResponse: false);
+    // Encrypt the complete payload before writing to the characteristic.
+    final encrypted = await _aesCtrEncrypt(fullPayload, _cipherKey!);
+    await _configChar!.write(encrypted.toList(), withoutResponse: false);
 
-    // Read response to confirm
-    final respRaw = await _configChar!.read();
-    final resp = Uint8List.fromList(respRaw);
+    // Read and decrypt the response before parsing.
+    final respEncrypted = Uint8List.fromList(await _configChar!.read());
+    final resp = await _aesCtrDecrypt(respEncrypted, _cipherKey!);
     if (!_parseConfigResponseSuccess(resp)) {
       throw Exception('Device rejected WiFi credentials');
     }
@@ -600,15 +629,20 @@ class ProvisioningService {
   /// Poll the device for WiFi connection status until connected or timeout.
   Future<bool> _pollWifiStatus({required Duration timeout}) async {
     final deadline = DateTime.now().add(timeout);
+    final key = _cipherKey;
+    if (key == null) return false;
 
     while (DateTime.now().isBefore(deadline)) {
       try {
-        // Send a get-status request
+        // Build the full WiFiConfigPayload for TypeCmdGetStatus, encrypt it,
+        // and write to prov-config.  The response is also encrypted and must
+        // be decrypted before parsing.
         final statusReq = _buildGetStatusMessage();
-        await _configChar!.write(statusReq.toList(), withoutResponse: false);
+        final encryptedReq = await _aesCtrEncrypt(statusReq, key);
+        await _configChar!.write(encryptedReq.toList(), withoutResponse: false);
 
-        final respRaw = await _configChar!.read();
-        final resp = Uint8List.fromList(respRaw);
+        final respEncrypted = Uint8List.fromList(await _configChar!.read());
+        final resp = await _aesCtrDecrypt(respEncrypted, key);
 
         final status = _parseWifiStatus(resp);
         if (status == _WifiStatus.connected) return true;
@@ -659,7 +693,7 @@ class ProvisioningService {
     if (sr0 == null) throw const FormatException('Missing sr0 in SessionResp0');
 
     final devicePubKey = _protoFindBytes(sr0, 2);
-    final deviceRandom = _protoFindBytes(sr0, 16);
+    final deviceRandom = _protoFindBytes(sr0, 3);
 
     if (devicePubKey == null || deviceRandom == null) {
       throw const FormatException('Missing keys in SessionResp0');
@@ -703,15 +737,6 @@ class ProvisioningService {
     ]);
   }
 
-  /// Wrap encrypted config payload into WiFiConfigPayload message.
-  Uint8List _buildConfigMessage(Uint8List encryptedPayload) {
-    // WiFiConfigPayload: field 1 (varint) = 2 (TypeCmdSetConfig),
-    //                    field 12 (bytes) = encrypted CmdSetConfig
-    return Uint8List.fromList([
-      ..._protoVarint(1, 2),
-      ..._protoBytes(12, encryptedPayload),
-    ]);
-  }
 
   /// Build WiFi status get request.
   Uint8List _buildGetStatusMessage() {
@@ -755,23 +780,49 @@ class ProvisioningService {
   }
 
   // ---------------------------------------------------------------------------
-  // AES-CTR encryption
+  // AES-CTR encryption / decryption
   // ---------------------------------------------------------------------------
 
-  Future<Uint8List> _aesCtrEncrypt(Uint8List plaintext, Uint8List key) async {
+  /// Core AES-256-CTR keystream application.
+  ///
+  /// AES-CTR encryption and decryption are the same XOR-with-keystream
+  /// operation. This method processes [data] starting at the current keystream
+  /// position ([_cipherByteCount]) and advances the counter by data.length.
+  ///
+  /// The ESP Security1 AES-CTR state is a single continuous keystream shared
+  /// across all encrypt/decrypt operations in a session, so the counter MUST
+  /// NOT be reset between calls.
+  Future<Uint8List> _aesCtrProcess(Uint8List data, Uint8List key) async {
     final algorithm = AesCtr.with256bits(macAlgorithm: MacAlgorithm.empty);
     final secretKey = SecretKey(key.sublist(0, 32));
-    // Use zero IV for simplicity (matches ESP-IDF Security1 implementation)
+    // Zero nonce: ESP-IDF Security1 initialises the AES-CTR block counter at
+    // all-zeros.  We advance into the keystream via keyStreamIndex rather than
+    // changing the nonce, which is the cleanest way to honour the running
+    // counter without recomputing the block boundary manually.
     final nonce = Uint8List(16);
 
     final result = await algorithm.encrypt(
-      plaintext,
+      data,
       secretKey: secretKey,
       nonce: nonce,
+      keyStreamIndex: _cipherByteCount,
     );
 
+    _cipherByteCount += data.length;
     return Uint8List.fromList(result.cipherText);
   }
+
+  /// Encrypt [plaintext] at the current keystream position and advance the
+  /// counter.  Used for writes to prov-session (SC1), prov-config, and
+  /// prov-scan characteristics.
+  Future<Uint8List> _aesCtrEncrypt(Uint8List plaintext, Uint8List key) =>
+      _aesCtrProcess(plaintext, key);
+
+  /// Decrypt [ciphertext] at the current keystream position and advance the
+  /// counter.  Used for reads from prov-config and prov-scan characteristics.
+  /// AES-CTR decryption is identical to encryption (XOR with keystream).
+  Future<Uint8List> _aesCtrDecrypt(Uint8List ciphertext, Uint8List key) =>
+      _aesCtrProcess(ciphertext, key);
 
   // ---------------------------------------------------------------------------
   // Minimal protobuf encoding/decoding helpers
@@ -891,6 +942,7 @@ class ProvisioningService {
     _configChar = null;
     _scanChar = null;
     _cipherKey = null;
+    _cipherByteCount = 0;
     // Only disconnect if we were the ones who established the connection.
     // If the device was already connected (e.g. for BLE telemetry) we must
     // NOT disconnect it — that would kill the active telemetry session.
