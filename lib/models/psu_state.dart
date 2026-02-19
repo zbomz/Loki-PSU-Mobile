@@ -29,6 +29,11 @@ class PsuState {
   final double? otpThreshold; // Celsius
   final bool? otpEnable;
 
+  // ---------------------------------------------------------------------------
+  // Remote configuration gate
+  // ---------------------------------------------------------------------------
+  final bool? allowRemoteConfig;
+
   const PsuState({
     this.outputVoltage,
     this.outputCurrent,
@@ -51,6 +56,7 @@ class PsuState {
     this.autoRetryAfterFaultEnable,
     this.otpThreshold,
     this.otpEnable,
+    this.allowRemoteConfig,
   });
 
   /// Create a copy with selected fields replaced.
@@ -76,6 +82,7 @@ class PsuState {
     bool? autoRetryAfterFaultEnable,
     double? otpThreshold,
     bool? otpEnable,
+    bool? allowRemoteConfig,
   }) {
     return PsuState(
       outputVoltage: outputVoltage ?? this.outputVoltage,
@@ -106,6 +113,7 @@ class PsuState {
           autoRetryAfterFaultEnable ?? this.autoRetryAfterFaultEnable,
       otpThreshold: otpThreshold ?? this.otpThreshold,
       otpEnable: otpEnable ?? this.otpEnable,
+      allowRemoteConfig: allowRemoteConfig ?? this.allowRemoteConfig,
     );
   }
 

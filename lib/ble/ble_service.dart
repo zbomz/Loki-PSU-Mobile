@@ -134,7 +134,7 @@ class BleService {
         }
       });
 
-      await device.connect(autoConnect: false);
+      await device.connect(license: License.free, autoConnect: false);
       _device = device;
 
       // Request a larger MTU for telemetry bundle responses.

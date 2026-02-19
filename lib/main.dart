@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'ble/ble_service.dart';
 import 'providers/ble_provider.dart';
 import 'providers/psu_state_provider.dart';
+import 'providers/wifi_provider.dart';
 import 'screens/scan_screen.dart';
 
 void main() {
@@ -31,16 +32,21 @@ class LokiPsuApp extends StatefulWidget {
 class _LokiPsuAppState extends State<LokiPsuApp> {
   // Single shared BLE service instance.
   late final BleService _bleService;
+  late final WiFiProvider _wifiProvider;
 
   @override
   void initState() {
     super.initState();
     _bleService = BleService();
+    _wifiProvider = WiFiProvider();
+    // Restore persisted RainMaker auth tokens on launch.
+    _wifiProvider.initialize();
   }
 
   @override
   void dispose() {
     _bleService.dispose();
+    _wifiProvider.dispose();
     super.dispose();
   }
 
@@ -54,6 +60,7 @@ class _LokiPsuAppState extends State<LokiPsuApp> {
         ChangeNotifierProvider(
           create: (_) => PsuStateProvider(_bleService),
         ),
+        ChangeNotifierProvider.value(value: _wifiProvider),
       ],
       child: MaterialApp(
         title: 'Loki PSU',

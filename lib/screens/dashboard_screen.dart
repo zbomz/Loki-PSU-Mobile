@@ -6,6 +6,8 @@ import '../models/psu_state.dart';
 import '../protocol/common_protocol.dart';
 import '../providers/ble_provider.dart';
 import '../providers/psu_state_provider.dart';
+import '../providers/wifi_provider.dart';
+import 'settings_screen.dart';
 
 /// Wireframe dashboard that shows all telemetry points, config values,
 /// and command actions for the connected Loki PSU.
@@ -16,14 +18,33 @@ class DashboardScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final ble = context.watch<BleProvider>();
     final psuProvider = context.watch<PsuStateProvider>();
-    final psu = psuProvider.state;
+    final wifi = context.watch<WiFiProvider>();
+
+    // Use cloud state when in cloud mode, otherwise BLE state.
+    final isCloudMode = wifi.activeTransport == ActiveTransport.cloud;
+    final psu = isCloudMode ? wifi.cloudState : psuProvider.state;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Loki PSU — Dashboard'),
         actions: [
-          _ConnectionChip(state: ble.connectionState),
+          // Transport indicator
+          _TransportChip(
+            transport: wifi.activeTransport,
+            bleState: ble.connectionState,
+          ),
           const SizedBox(width: 8),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const SettingsScreen()),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh all',
@@ -47,7 +68,7 @@ class DashboardScreen extends StatelessWidget {
           const SizedBox(width: 4),
         ],
       ),
-      body: !ble.isConnected
+      body: !ble.isConnected && !isCloudMode
           ? const Center(child: Text('Not connected'))
           : psuProvider.loading
               ? const Center(child: CircularProgressIndicator())
@@ -231,18 +252,28 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-class _ConnectionChip extends StatelessWidget {
-  final BleConnectionState state;
-  const _ConnectionChip({required this.state});
+class _TransportChip extends StatelessWidget {
+  final ActiveTransport transport;
+  final BleConnectionState bleState;
+  const _TransportChip({required this.transport, required this.bleState});
 
   @override
   Widget build(BuildContext context) {
-    final (label, color) = switch (state) {
-      BleConnectionState.disconnected => ('Disconnected', Colors.grey),
-      BleConnectionState.connecting => ('Connecting...', Colors.orange),
-      BleConnectionState.connected => ('Connected', Colors.green),
+    final (label, icon, color) = switch (transport) {
+      ActiveTransport.cloud => ('Cloud', Icons.cloud, Colors.blue),
+      ActiveTransport.ble => switch (bleState) {
+          BleConnectionState.disconnected => ('BLE Off', Icons.bluetooth_disabled, Colors.grey),
+          BleConnectionState.connecting => ('BLE...', Icons.bluetooth_searching, Colors.orange),
+          BleConnectionState.connected => ('BLE', Icons.bluetooth_connected, Colors.green),
+        },
+      ActiveTransport.none => switch (bleState) {
+          BleConnectionState.disconnected => ('Offline', Icons.signal_wifi_off, Colors.grey),
+          BleConnectionState.connecting => ('BLE...', Icons.bluetooth_searching, Colors.orange),
+          BleConnectionState.connected => ('BLE', Icons.bluetooth_connected, Colors.green),
+        },
     };
     return Chip(
+      avatar: Icon(icon, size: 16, color: color),
       label: Text(label, style: const TextStyle(fontSize: 12)),
       backgroundColor: color.withOpacity(0.2),
       side: BorderSide(color: color),
