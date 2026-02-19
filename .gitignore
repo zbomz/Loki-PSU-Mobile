@@ -9,7 +9,6 @@ build/
 ios/Flutter/Generated.xcconfig
 android/app/build.gradle
 android/app/google-services.json
-android/gradle.properties
 ios/Podfile.lock
 lib/generated_plugin_registrant.dart
 

@@ -19,10 +19,48 @@ Both must pass with **zero errors** before proceeding.
 
 ---
 
-## Phase 2 — Push
+## Phase 2 — Stage, Commit, and Push
+
+### Step 1 — Check for untracked and modified files
+
+**Always run this first.** Do NOT compare against GitHub to decide whether a
+push is needed — new files that have never been committed are invisible to that
+comparison.
+
+```powershell
+git status
+```
+
+Review the output carefully:
+
+- **Untracked files** (listed under `Untracked files:`) are brand-new files
+  that have never been added to git. They will **not** show up in a diff
+  against the remote, but they still need to be committed and pushed.
+- **Modified files** are files that git already tracks but have local changes.
+
+If `git status` shows **any** untracked files, modified files, or deleted
+files — proceed to Step 2. **Do not skip the push.**
+
+### Step 2 — Stage all changes (including new files)
 
 ```powershell
 git add -A
+```
+
+`git add -A` stages everything: new files, modifications, and deletions.
+Always use `-A` to ensure no new files are accidentally left out.
+
+Confirm everything is staged:
+
+```powershell
+git status
+```
+
+All entries should now appear under `Changes to be committed:`.
+
+### Step 3 — Commit and push
+
+```powershell
 git commit -m "<message>"
 git push origin main
 ```
