@@ -21,8 +21,9 @@ class BleConstants {
   static final Guid requestCharUuid = Guid(requestCharUuidString);
   static final Guid responseCharUuid = Guid(responseCharUuidString);
 
-  /// Expected BLE advertised device name.
-  static const String deviceName = 'Loki PSU';
+  /// BLE advertised device name prefix. Each device appends a unique MAC suffix,
+  /// e.g. "Loki PSU-A1B2C3". Scan results are filtered by this prefix.
+  static const String deviceNamePrefix = 'Loki PSU-';
 
   /// MTU to request after connection.
   static const int requestedMtu = 256;

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import '../ble/ble_constants.dart';
 import '../ble/ble_service.dart';
 
 /// ChangeNotifier that exposes BLE scan results, connection state,
@@ -53,7 +54,13 @@ class BleProvider extends ChangeNotifier {
       // Listen to scan results for the entire duration of the scan.
       _scanResultsSub?.cancel();
       _scanResultsSub = _bleService.scanResults.listen((results) {
-        _scanResults = results;
+        // Filter to only devices whose advertised name starts with the Loki PSU
+        // prefix (e.g. "Loki PSU-A1B2C3"). The firmware no longer includes the
+        // service UUID in advertising, so name-prefix filtering replaces it.
+        _scanResults = results
+            .where((r) =>
+                r.device.advName.startsWith(BleConstants.deviceNamePrefix))
+            .toList();
         notifyListeners();
       });
 

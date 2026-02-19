@@ -109,10 +109,10 @@ class BleService {
       );
     }
 
-    await FlutterBluePlus.startScan(
-      withServices: [BleConstants.serviceUuid],
-      timeout: timeout,
-    );
+    // Scan without a service UUID filter — the Loki TLV service UUID is no
+    // longer included in advertising packets (the RainMaker provisioning scheme
+    // controls advertising). Devices are identified by name prefix instead.
+    await FlutterBluePlus.startScan(timeout: timeout);
   }
 
   Future<void> stopScan() async {
