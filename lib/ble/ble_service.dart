@@ -6,6 +6,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../protocol/tlv_codec.dart';
 import 'ble_constants.dart';
+import 'security1_session.dart';
 
 /// Connection state exposed to the rest of the app.
 enum BleConnectionState { disconnected, connecting, connected }
@@ -145,6 +146,21 @@ class BleService {
 
       // Discover services and locate characteristics.
       final services = await device.discoverServices();
+
+      // The unified protocomm_nimble BLE stack on the ESP32 requires a
+      // Security1 session to be established before the firmware will allow
+      // any GATT operations (including notification subscriptions) on
+      // non-provisioning characteristics.  Perform the handshake now; if the
+      // prov-session characteristic is absent (older firmware) the call is a
+      // no-op.
+      try {
+        await Security1Session.establish(services);
+      } catch (e) {
+        // Non-fatal: if the handshake fails the connection may still work on
+        // firmware that does not enforce session-first gating.
+        print('Security1 session establish hint failed (non-fatal): $e');
+      }
+
       final lokiService = services.firstWhere(
         (s) => s.serviceUuid == BleConstants.serviceUuid,
         orElse: () =>
