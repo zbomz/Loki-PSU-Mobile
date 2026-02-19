@@ -26,6 +26,18 @@ class ProvisioningResult {
   ProvisioningResult({required this.success, required this.message});
 }
 
+/// A Wi-Fi access point discovered by the ESP32 during provisioning.
+class WifiAccessPoint {
+  final String ssid;
+  final int rssi;
+  final int authMode; // 0 = open, non-zero = secured
+  WifiAccessPoint({
+    required this.ssid,
+    required this.rssi,
+    required this.authMode,
+  });
+}
+
 /// Service that handles WiFi provisioning of the ESP32-C3 over BLE.
 ///
 /// Implements the ESP Unified Provisioning protocol (Security1):
@@ -39,6 +51,7 @@ class ProvisioningService {
   BluetoothDevice? _device;
   BluetoothCharacteristic? _sessionChar;
   BluetoothCharacteristic? _configChar;
+  BluetoothCharacteristic? _scanChar;
   StreamSubscription<BluetoothConnectionState>? _connectionSub;
 
   /// True when [provision] connected the device itself. False when the device
@@ -132,6 +145,185 @@ class ProvisioningService {
   }
 
   // ---------------------------------------------------------------------------
+  // Wi-Fi network scan (via prov-scan GATT characteristic)
+  // ---------------------------------------------------------------------------
+
+  /// Connect to [device] (if needed), perform the Security1 handshake, then
+  /// ask the ESP32 to scan for nearby Wi-Fi access points.
+  ///
+  /// Returns a deduplicated list sorted by signal strength (strongest first).
+  /// The BLE session is kept alive (cipher key cached) so a subsequent call
+  /// to [provision] can skip the handshake step.
+  Future<List<WifiAccessPoint>> scanWifiNetworks(
+    BluetoothDevice device, {
+    String pop = RainMakerConstants.provPop,
+    Duration scanTimeout = const Duration(seconds: 10),
+  }) async {
+    _device = device;
+
+    // ---- 1. Connect if not already connected ----
+    _weConnected = !device.isConnected;
+    if (_weConnected) {
+      _connectionSub = device.connectionState.listen((s) {
+        if (s == BluetoothConnectionState.disconnected) {
+          _cleanup();
+        }
+      });
+      await device.connect(license: License.free, autoConnect: false);
+    }
+
+    // ---- 2. Discover services & find characteristics ----
+    final services = await device.discoverServices();
+    _findProvisioningCharacteristics(services);
+    _findScanCharacteristic(services);
+
+    if (_sessionChar == null || _configChar == null) {
+      throw Exception('Provisioning GATT characteristics not found on device');
+    }
+
+    // ---- 3. Security1 handshake (establishes _cipherKey) ----
+    _setStep(ProvisioningStep.handshake);
+    await _performSecurity1Handshake(pop);
+
+    // ---- 4. Start Wi-Fi scan on the ESP32 ----
+    // WiFiScanPayload: field 1 (varint) = 0 (TypeCmdScanStart)
+    //                 field 10 (bytes) = CmdScanStart {}
+    // CmdScanStart fields: blocking(1)=false(0), passive(2)=false(0),
+    //                      group_channels(3)=0, period_ms(4)=120
+    final cmdScanStart = Uint8List.fromList([
+      ..._protoVarint(1, 0), // msg type = TypeCmdScanStart
+      ..._protoBytes(
+        10,
+        Uint8List.fromList([
+          ..._protoVarint(1, 0), // blocking = false
+          ..._protoVarint(2, 0), // passive = false
+          ..._protoVarint(3, 0), // group_channels = 0
+          ..._protoVarint(4, 120), // period_ms = 120
+        ]),
+      ),
+    ]);
+
+    final scanChar = _scanChar ?? _configChar!;
+    await scanChar.write(cmdScanStart.toList(), withoutResponse: false);
+
+    // ---- 5. Poll until scan is finished ----
+    final deadline = DateTime.now().add(scanTimeout);
+    int apCount = 0;
+    while (DateTime.now().isBefore(deadline)) {
+      // Send TypeCmdScanStatus (2)
+      final cmdStatus = Uint8List.fromList([
+        ..._protoVarint(1, 2), // msg type = TypeCmdScanStatus
+        ..._protoBytes(12, Uint8List(0)), // empty CmdScanStatus {}
+      ]);
+      await scanChar.write(cmdStatus.toList(), withoutResponse: false);
+
+      final respRaw = Uint8List.fromList(await scanChar.read());
+      // RespScanStatus is at field 13 of WiFiScanPayload
+      final respStatus = _protoFindBytes(respRaw, 13);
+      if (respStatus != null) {
+        // scan_finished is field 1 (varint), result_count is field 2 (varint)
+        final finished = _protoFindVarint(respStatus, 1);
+        final count = _protoFindVarint(respStatus, 2);
+        if (finished == 1) {
+          apCount = count ?? 0;
+          break;
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+
+    if (apCount == 0) return [];
+
+    // ---- 6. Fetch results in batches of 4 ----
+    const batchSize = 4;
+    final seen = <String>{};
+    final results = <WifiAccessPoint>[];
+
+    for (int startIndex = 0; startIndex < apCount; startIndex += batchSize) {
+      final count =
+          (startIndex + batchSize > apCount) ? apCount - startIndex : batchSize;
+
+      // CmdScanResult: start_index(1)=startIndex, count(2)=count
+      final cmdResult = Uint8List.fromList([
+        ..._protoVarint(1, 4), // msg type = TypeCmdScanResult
+        ..._protoBytes(
+          14,
+          Uint8List.fromList([
+            ..._protoVarint(1, startIndex),
+            ..._protoVarint(2, count),
+          ]),
+        ),
+      ]);
+      await scanChar.write(cmdResult.toList(), withoutResponse: false);
+
+      final respRaw = Uint8List.fromList(await scanChar.read());
+      // RespScanResult is at field 15 of WiFiScanPayload
+      final respResult = _protoFindBytes(respRaw, 15);
+      if (respResult == null) continue;
+
+      // entries are repeated field 1 (length-delimited) in RespScanResult
+      _parseWifiScanEntries(respResult, seen, results);
+    }
+
+    // Sort by signal strength (strongest first)
+    results.sort((a, b) => b.rssi.compareTo(a.rssi));
+    return results;
+  }
+
+  /// Parse all repeated `WiFiScanResult` entries from a `RespScanResult` blob.
+  void _parseWifiScanEntries(
+    Uint8List data,
+    Set<String> seen,
+    List<WifiAccessPoint> out,
+  ) {
+    int offset = 0;
+    while (offset < data.length) {
+      final (tag, afterTag) = _decodeVarint(data, offset);
+      if (afterTag < 0) break;
+      offset = afterTag;
+
+      final fieldNumber = tag >> 3;
+      final wireType = tag & 0x07;
+
+      if (wireType == 2) {
+        final (length, dataOffset) = _decodeVarint(data, offset);
+        if (dataOffset < 0) break;
+        offset = dataOffset;
+
+        if (fieldNumber == 1) {
+          // This is one WiFiScanResult entry
+          final entry = Uint8List.sublistView(data, offset, offset + length);
+          // ssid = field 1 (bytes), channel = field 2, rssi = field 3 (varint, signed),
+          // bssid = field 4, auth = field 5 (varint)
+          final ssidBytes = _protoFindBytes(entry, 1);
+          final rssiRaw = _protoFindVarint(entry, 3);
+          final auth = _protoFindVarint(entry, 5) ?? 0;
+
+          if (ssidBytes != null && ssidBytes.isNotEmpty) {
+            final ssid = utf8.decode(ssidBytes, allowMalformed: true).trim();
+            // rssi is encoded as a signed 32-bit varint; treat values > 127
+            // as negative using two's complement for 32 bits.
+            int rssi = rssiRaw ?? -100;
+            if (rssi > 127) rssi = rssi - 256;
+
+            if (ssid.isNotEmpty && !seen.contains(ssid)) {
+              seen.add(ssid);
+              out.add(WifiAccessPoint(ssid: ssid, rssi: rssi, authMode: auth));
+            }
+          }
+        }
+        offset += length;
+      } else if (wireType == 0) {
+        final (_, nextOffset) = _decodeVarint(data, offset);
+        if (nextOffset < 0) break;
+        offset = nextOffset;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Full provisioning flow
   // ---------------------------------------------------------------------------
 
@@ -167,22 +359,44 @@ class ProvisioningService {
         await device.connect(license: License.free, autoConnect: false);
       }
 
-      // Discover services
-      final services = await device.discoverServices();
-
-      // Find the provisioning GATT characteristics.
-      // ESP Unified Provisioning uses a custom service with characteristics
-      // named by descriptor or by short UUID pattern.
-      _findProvisioningCharacteristics(services);
-
+      // Discover services only if characteristics are not already cached from
+      // a prior scanWifiNetworks() call.
       if (_sessionChar == null || _configChar == null) {
-        throw Exception(
-            'Provisioning GATT characteristics not found on device');
+        final services = await device.discoverServices();
+
+        // Find the provisioning GATT characteristics.
+        // ESP Unified Provisioning uses a custom service with characteristics
+        // named by descriptor or by short UUID pattern.
+        _findProvisioningCharacteristics(services);
+
+        if (_sessionChar == null || _configChar == null) {
+          // Build a diagnostic list of what was actually found so the developer
+          // and the user can see whether the device exposed any services at all.
+          final foundServices = services
+              .map((s) => s.serviceUuid.toString())
+              .join(', ');
+          final foundChars = services
+              .expand((s) => s.characteristics)
+              .map((c) => c.characteristicUuid.toString())
+              .join(', ');
+          throw Exception(
+            'ESP provisioning GATT service not found on this device.\n\n'
+            'The Loki PSU must be in provisioning mode (advertising as '
+            'PROV_LOKI_…) before WiFi provisioning can proceed. '
+            'In normal telemetry mode the device only exposes its Loki TLV '
+            'service and cannot be provisioned.\n\n'
+            'Services found: ${foundServices.isEmpty ? "none" : foundServices}\n'
+            'Characteristics found: ${foundChars.isEmpty ? "none" : foundChars}',
+          );
+        }
       }
 
       // ---- 2. Security1 handshake ----
-      _setStep(ProvisioningStep.handshake);
-      await _performSecurity1Handshake(pop);
+      // Skipped when scanWifiNetworks() already established the session key.
+      if (_cipherKey == null) {
+        _setStep(ProvisioningStep.handshake);
+        await _performSecurity1Handshake(pop);
+      }
 
       // ---- 3. Send WiFi credentials ----
       _setStep(ProvisioningStep.sendingCredentials);
@@ -240,12 +454,14 @@ class ProvisioningService {
         // Service: 021a9004-0382-4aea-bff4-6b3f1c5adfb4
         // prov-session: 021aff51-0382-4aea-bff4-6b3f1c5adfb4
         // prov-config:  021aff52-0382-4aea-bff4-6b3f1c5adfb4
-        // proto-ver:    021aff53-0382-4aea-bff4-6b3f1c5adfb4
+        // prov-scan:    021aff53-0382-4aea-bff4-6b3f1c5adfb4
         final uuid = char.characteristicUuid.toString().toLowerCase();
         if (uuid.contains('ff51')) {
           _sessionChar = char;
         } else if (uuid.contains('ff52')) {
           _configChar = char;
+        } else if (uuid.contains('ff53')) {
+          _scanChar = char;
         }
       }
     }
@@ -269,7 +485,25 @@ class ProvisioningService {
 
             _sessionChar ??= writableChars[0];
             _configChar ??= writableChars[1];
+            if (writableChars.length >= 3) {
+              _scanChar ??= writableChars[2];
+            }
           }
+        }
+      }
+    }
+  }
+
+  /// Locate the prov-scan characteristic (UUID containing `ff53`) within
+  /// already-discovered services.  Called after [_findProvisioningCharacteristics].
+  void _findScanCharacteristic(List<BluetoothService> services) {
+    if (_scanChar != null) return; // already found during primary discovery
+    for (final service in services) {
+      for (final char in service.characteristics) {
+        final uuid = char.characteristicUuid.toString().toLowerCase();
+        if (uuid.contains('ff53')) {
+          _scanChar = char;
+          return;
         }
       }
     }
@@ -655,6 +889,7 @@ class ProvisioningService {
     _connectionSub = null;
     _sessionChar = null;
     _configChar = null;
+    _scanChar = null;
     _cipherKey = null;
     // Only disconnect if we were the ones who established the connection.
     // If the device was already connected (e.g. for BLE telemetry) we must
