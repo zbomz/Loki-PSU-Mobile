@@ -4,13 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 
+import '../providers/ble_provider.dart';
 import '../providers/wifi_provider.dart';
 import '../wifi/provisioning_service.dart';
 
 /// WiFi provisioning screen.
 ///
 /// Flow:
-///  1. Scan for provisioning-capable devices (PROV_LOKI_*)
+///  1. Detect already-connected device (from BleProvider) OR scan for
+///     provisioning-capable devices advertising as PROV_LOKI_*
 ///  2. User selects a device
 ///  3. User enters WiFi SSID + password
 ///  4. Provisioning runs (handshake → credentials → status polling)
@@ -27,7 +29,14 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
 
+  /// Devices found via BLE scan (PROV_LOKI_* advertisement filter).
   List<ScanResult> _provDevices = [];
+
+  /// The device that is already connected via the main BleService/BleProvider
+  /// (used for telemetry). Connected BLE devices never appear in scan results
+  /// on iOS or Android, so we surface this separately.
+  BluetoothDevice? _alreadyConnectedDevice;
+
   BluetoothDevice? _selectedDevice;
   StreamSubscription<List<ScanResult>>? _scanSub;
 
@@ -40,6 +49,23 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   @override
   void initState() {
     super.initState();
+
+    // Check for an existing BLE connection from the main telemetry service.
+    // Connected devices are invisible to BLE scans, so we pull the device
+    // directly from BleProvider and pre-select it.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ble = context.read<BleProvider>();
+      if (ble.isConnected && ble.connectedDevice != null) {
+        setState(() {
+          _alreadyConnectedDevice = ble.connectedDevice;
+          // Auto-select the connected device so the user can go straight to
+          // entering WiFi credentials without any extra tap.
+          _selectedDevice = ble.connectedDevice;
+        });
+      }
+    });
+
     _startScan();
   }
 
@@ -59,6 +85,8 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
       _isScanning = true;
       _scanError = null;
       _provDevices = [];
+      // NOTE: Do NOT reset _alreadyConnectedDevice or _selectedDevice here —
+      // the pre-connected device must survive a rescan.
     });
 
     _scanSub?.cancel();
@@ -66,7 +94,19 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
         .scanForProvisionableDevices(timeout: const Duration(seconds: 10))
         .listen(
       (results) {
-        if (mounted) setState(() => _provDevices = results);
+        if (mounted) {
+          setState(() {
+            // Deduplicate: exclude the already-connected device from scan
+            // results (it won't appear anyway, but guard just in case).
+            _provDevices = _alreadyConnectedDevice == null
+                ? results
+                : results
+                    .where((r) =>
+                        r.device.remoteId !=
+                        _alreadyConnectedDevice!.remoteId)
+                    .toList();
+          });
+        }
       },
       onError: (Object e) {
         if (mounted) {
@@ -81,6 +121,10 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
       },
     );
   }
+
+  /// True when there is at least one device the user can select.
+  bool get _hasAnyDevice =>
+      _alreadyConnectedDevice != null || _provDevices.isNotEmpty;
 
   @override
   Widget build(BuildContext context) {
@@ -105,7 +149,17 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
             ),
             const SizedBox(height: 8),
 
-            if (_isScanning && _provDevices.isEmpty)
+            // Already-connected device card (shown even while scanning).
+            if (_alreadyConnectedDevice != null)
+              _buildDeviceCard(
+                device: _alreadyConnectedDevice!,
+                subtitle: 'Currently connected via Bluetooth',
+                rssi: null,
+                isConnectedDevice: true,
+              ),
+
+            // Scanning spinner (only when no devices at all are visible yet).
+            if (_isScanning && !_hasAnyDevice)
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
@@ -114,7 +168,7 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                       const CircularProgressIndicator(),
                       const SizedBox(height: 16),
                       Text(
-                        'Scanning for Loki PSU provisioning devices...',
+                        'Scanning for Loki PSU provisioning devices…',
                         style: Theme.of(context).textTheme.bodyMedium,
                         textAlign: TextAlign.center,
                       ),
@@ -122,7 +176,8 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                   ),
                 ),
               )
-            else if (_scanError != null)
+            else if (_scanError != null && !_hasAnyDevice)
+              // Only surface the scan error when there is no device to use.
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
@@ -149,7 +204,8 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                   ),
                 ),
               )
-            else if (_provDevices.isEmpty)
+            else if (!_isScanning && !_hasAnyDevice)
+              // Scan finished with zero results and no pre-connected device.
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
@@ -159,8 +215,10 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                       const SizedBox(height: 16),
                       Text(
                         'No provisioning devices found.\n'
-                        'Ensure the Loki PSU is in provisioning mode'
-                        ' (advertising as PROV_LOKI_…).',
+                        'If you are already connected to the Loki PSU via '
+                        'Bluetooth, go back and reconnect, then return here.\n\n'
+                        'Otherwise, ensure the Loki PSU is in provisioning '
+                        'mode (advertising as PROV_LOKI_…).',
                         style: Theme.of(context).textTheme.bodyMedium,
                         textAlign: TextAlign.center,
                       ),
@@ -173,27 +231,36 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                     ],
                   ),
                 ),
-              )
-            else
-              ...(_provDevices.map((r) => Card(
-                    color: _selectedDevice == r.device
-                        ? Theme.of(context)
-                            .colorScheme
-                            .primaryContainer
-                        : null,
-                    child: ListTile(
-                      leading: const Icon(Icons.wifi_tethering),
-                      title: Text(r.device.platformName),
-                      subtitle: Text(
-                          '${r.device.remoteId}  (${r.rssi} dBm)'),
-                      trailing: _selectedDevice == r.device
-                          ? const Icon(Icons.check_circle,
-                              color: Colors.green)
-                          : null,
-                      onTap: () =>
-                          setState(() => _selectedDevice = r.device),
+              ),
+
+            // Additional devices found via scan (PROV_LOKI_* advertisement).
+            for (final r in _provDevices)
+              _buildDeviceCard(
+                device: r.device,
+                subtitle: r.device.remoteId.toString(),
+                rssi: r.rssi,
+                isConnectedDevice: false,
+              ),
+
+            // Small progress indicator while scan is running alongside devices.
+            if (_isScanning && _hasAnyDevice)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
                     ),
-                  ))),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Scanning for additional devices…',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
 
             const SizedBox(height: 24),
 
@@ -305,6 +372,55 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildDeviceCard({
+    required BluetoothDevice device,
+    required String subtitle,
+    required int? rssi,
+    required bool isConnectedDevice,
+  }) {
+    final isSelected = _selectedDevice?.remoteId == device.remoteId;
+    return Card(
+      color: isSelected
+          ? Theme.of(context).colorScheme.primaryContainer
+          : null,
+      child: ListTile(
+        leading: Icon(
+          isConnectedDevice ? Icons.bluetooth_connected : Icons.wifi_tethering,
+        ),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(
+                device.platformName.isNotEmpty
+                    ? device.platformName
+                    : device.remoteId.toString(),
+              ),
+            ),
+            if (isConnectedDevice) ...[
+              const SizedBox(width: 8),
+              Chip(
+                label: const Text('Connected'),
+                padding: EdgeInsets.zero,
+                labelPadding:
+                    const EdgeInsets.symmetric(horizontal: 6),
+                visualDensity: VisualDensity.compact,
+                backgroundColor:
+                    Theme.of(context).colorScheme.primaryContainer,
+              ),
+            ],
+          ],
+        ),
+        subtitle: Text(
+          rssi != null ? '$subtitle  ($rssi dBm)' : subtitle,
+        ),
+        trailing: isSelected
+            ? const Icon(Icons.check_circle, color: Colors.green)
+            : null,
+        onTap: () => setState(() => _selectedDevice = device),
       ),
     );
   }

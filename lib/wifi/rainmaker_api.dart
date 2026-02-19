@@ -71,6 +71,7 @@ class RainMakerApiClient {
     await _storage.delete(key: RainMakerConstants.refreshTokenKey);
     await _storage.delete(key: RainMakerConstants.idTokenKey);
     await _storage.delete(key: RainMakerConstants.userEmailKey);
+    await _storage.delete(key: RainMakerConstants.socialLoginKey);
   }
 
   Map<String, String> get _authHeaders => {
@@ -220,11 +221,19 @@ class RainMakerApiClient {
     }
 
     final tokenData = jsonDecode(tokenResponse.body);
+    // The RainMaker REST API validates the Cognito ID token (a signed JWT
+    // containing user-identity claims) in the Authorization header — not the
+    // opaque Cognito access token.  Store id_token as the credential used
+    // for every authenticated API call.
     await _saveTokens(
-      accessToken: tokenData['access_token'] as String,
+      accessToken: tokenData['id_token'] as String,
       refreshToken: tokenData['refresh_token'] as String,
       idToken: tokenData['id_token'] as String,
     );
+    // Mark this session as a social login so refreshAccessToken() routes
+    // to the Cognito /oauth2/token endpoint instead of RainMaker's /login.
+    await _storage.write(
+        key: RainMakerConstants.socialLoginKey, value: 'true');
 
     // 5. Attempt to extract user email from the ID token (JWT middle segment).
     try {
@@ -248,33 +257,68 @@ class RainMakerApiClient {
   }
 
   /// Refresh the access token using the stored refresh token.
+  ///
+  /// Social-login sessions (Google / GitHub / Apple) use the Cognito Hosted UI
+  /// OAuth endpoint; password-based sessions use the RainMaker `/login` endpoint.
   Future<void> refreshAccessToken() async {
     if (_refreshToken == null) {
       throw RainMakerApiException('No refresh token available', 401);
     }
 
-    final url =
-        Uri.parse('${RainMakerConstants.baseUrl}${RainMakerConstants.tokenEndpoint}');
-    final body = jsonEncode({
-      'refreshtoken': _refreshToken,
-    });
+    final isSocial =
+        await _storage.read(key: RainMakerConstants.socialLoginKey) == 'true';
 
-    final response = await _http.post(url,
-        headers: {'Content-Type': 'application/json'}, body: body);
+    if (isSocial) {
+      // ---- Social login: refresh via Cognito Hosted UI ----
+      final tokenUri =
+          Uri.parse('${RainMakerConstants.cognitoDomain}/oauth2/token');
+      final response = await _http.post(
+        tokenUri,
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'grant_type': 'refresh_token',
+          'client_id': RainMakerConstants.cognitoClientId,
+          'refresh_token': _refreshToken!,
+        },
+      );
 
-    if (response.statusCode != 200) {
-      // Refresh failed — force re-login
-      await _clearTokens();
-      throw RainMakerApiException(
-          'Session expired. Please log in again.', response.statusCode);
+      if (response.statusCode != 200) {
+        await _clearTokens();
+        throw RainMakerApiException(
+            'Session expired. Please log in again.', response.statusCode);
+      }
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      // Cognito refresh does NOT return a new refresh_token — keep the old one.
+      // Use the new id_token as the API credential (same logic as initial login).
+      await _saveTokens(
+        accessToken: data['id_token'] as String,
+        refreshToken: _refreshToken!,
+        idToken: data['id_token'] as String,
+      );
+    } else {
+      // ---- Password login: refresh via RainMaker endpoint ----
+      final url = Uri.parse(
+          '${RainMakerConstants.baseUrl}${RainMakerConstants.tokenEndpoint}');
+      final body = jsonEncode({'refreshtoken': _refreshToken});
+
+      final response = await _http.post(url,
+          headers: {'Content-Type': 'application/json'}, body: body);
+
+      if (response.statusCode != 200) {
+        // Refresh failed — force re-login
+        await _clearTokens();
+        throw RainMakerApiException(
+            'Session expired. Please log in again.', response.statusCode);
+      }
+
+      final data = jsonDecode(response.body);
+      await _saveTokens(
+        accessToken: data['accesstoken'],
+        refreshToken: data['refreshtoken'],
+        idToken: data['idtoken'],
+      );
     }
-
-    final data = jsonDecode(response.body);
-    await _saveTokens(
-      accessToken: data['accesstoken'],
-      refreshToken: data['refreshtoken'],
-      idToken: data['idtoken'],
-    );
   }
 
   /// Log out and clear stored tokens.
@@ -333,9 +377,8 @@ class RainMakerApiClient {
     final response = await _authenticatedPut(url, params);
 
     if (response.statusCode != 200) {
-      final data = jsonDecode(response.body);
       throw RainMakerApiException(
-          data['description'] ?? 'Failed to set params', response.statusCode);
+          _safeErrorMessage(response), response.statusCode);
     }
   }
 
@@ -415,9 +458,8 @@ class RainMakerApiClient {
     }
 
     if (response.statusCode != 200) {
-      final data = jsonDecode(response.body);
       throw RainMakerApiException(
-          data['description'] ?? 'API request failed', response.statusCode);
+          _safeErrorMessage(response), response.statusCode);
     }
 
     return response;
@@ -435,6 +477,19 @@ class RainMakerApiClient {
     }
 
     return response;
+  }
+
+  /// Safely extract an error description from [response].
+  ///
+  /// Falls back to a generic message when the body is not valid JSON
+  /// (e.g. the server returned an HTML error page).
+  static String _safeErrorMessage(http.Response response) {
+    try {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return data['description'] as String? ?? 'API error ${response.statusCode}';
+    } catch (_) {
+      return 'API error ${response.statusCode} (unexpected server response)';
+    }
   }
 
   static double? _toDouble(dynamic v) {

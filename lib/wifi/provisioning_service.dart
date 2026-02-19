@@ -41,6 +41,11 @@ class ProvisioningService {
   BluetoothCharacteristic? _configChar;
   StreamSubscription<BluetoothConnectionState>? _connectionSub;
 
+  /// True when [provision] connected the device itself. False when the device
+  /// was already connected (e.g. by the main BleService for telemetry).
+  /// Only used by [_cleanup] to decide whether to call disconnect().
+  bool _weConnected = false;
+
   /// AES cipher key derived from Curve25519 shared secret + PoP.
   Uint8List? _cipherKey;
 
@@ -143,15 +148,24 @@ class ProvisioningService {
     Duration statusPollTimeout = const Duration(seconds: 30),
   }) async {
     try {
-      // ---- 1. Connect ----
+      // ---- 1. Connect (if not already connected) ----
       _setStep(ProvisioningStep.connecting);
       _device = device;
-      _connectionSub = device.connectionState.listen((s) {
-        if (s == BluetoothConnectionState.disconnected) {
-          _cleanup();
-        }
-      });
-      await device.connect(license: License.free, autoConnect: false);
+
+      // The device may already be connected (e.g. for telemetry via BleService).
+      // BLE devices don't appear in scan results when connected, so the
+      // provisioning screen surfaces them from BleProvider directly.
+      // Calling connect() on an already-connected device throws on iOS/Android,
+      // so we only connect when truly disconnected.
+      _weConnected = !device.isConnected;
+      if (_weConnected) {
+        _connectionSub = device.connectionState.listen((s) {
+          if (s == BluetoothConnectionState.disconnected) {
+            _cleanup();
+          }
+        });
+        await device.connect(license: License.free, autoConnect: false);
+      }
 
       // Discover services
       final services = await device.discoverServices();
@@ -642,9 +656,15 @@ class ProvisioningService {
     _sessionChar = null;
     _configChar = null;
     _cipherKey = null;
-    try {
-      await _device?.disconnect();
-    } catch (_) {}
+    // Only disconnect if we were the ones who established the connection.
+    // If the device was already connected (e.g. for BLE telemetry) we must
+    // NOT disconnect it — that would kill the active telemetry session.
+    if (_weConnected) {
+      try {
+        await _device?.disconnect();
+      } catch (_) {}
+    }
+    _weConnected = false;
     _device = null;
   }
 

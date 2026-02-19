@@ -55,6 +55,11 @@ class RainMakerConstants {
   static const String idTokenKey = 'rm_id_token';
   static const String userEmailKey = 'rm_user_email';
 
+  /// Set to `'true'` when the user authenticated via a social provider
+  /// (Google, GitHub, Apple) rather than email + password.  Used to route
+  /// token-refresh calls to the correct endpoint.
+  static const String socialLoginKey = 'rm_social_login';
+
   // ---- Firmware RainMaker param names → PsuState field map ----
   // Telemetry (read-only)
   static const String paramVoltage = 'voltage';
