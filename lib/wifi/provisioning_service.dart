@@ -72,7 +72,7 @@ class ProvisioningService {
 
     final controller = StreamController<List<ScanResult>>();
 
-    Future<void> _run() async {
+    Future<void> performScan() async {
       try {
         // Stop any in-progress scan to avoid conflicts with the main BLE scan.
         await FlutterBluePlus.stopScan();
@@ -118,7 +118,7 @@ class ProvisioningService {
       }
     }
 
-    _run(); // errors travel through the StreamController
+    performScan(); // errors travel through the StreamController
     return controller.stream;
   }
 
