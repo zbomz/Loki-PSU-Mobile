@@ -30,6 +30,11 @@ class BleService {
   BluetoothAdapterState _cachedAdapterState = BluetoothAdapterState.unknown;
   StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
 
+  /// Whether BLE notifications are supported for the TLV Response characteristic.
+  /// When `false` (e.g. the firmware's shim-injected ATT table lacks a CCCD
+  /// descriptor), the service falls back to a read-after-write pattern.
+  bool _notifySupported = true;
+
   /// Completer that gets completed when a notification arrives.
   Completer<Uint8List>? _responseCompleter;
 
@@ -144,6 +149,21 @@ class BleService {
         await device.requestMtu(BleConstants.requestedMtu);
       }
 
+      // Flush the platform GATT cache so we get a fresh ATT table.
+      //
+      // On Android, clearGattCache() clears any cached ATT handles from
+      // previous connections.  This is critical after a firmware update that
+      // reorganizes the GATT table — stale handles cause "Invalid PDU" errors.
+      //
+      // On iOS there is no programmatic cache clear API; however, calling
+      // discoverServices() forces CoreBluetooth to perform a full ATT
+      // discovery from the device.  If stale handles still persist (e.g. the
+      // device was previously bonded under a different ATT layout), the user
+      // must "Forget" the device in iOS Bluetooth settings.
+      if (Platform.isAndroid) {
+        await device.clearGattCache();
+      }
+
       // Discover services and locate characteristics.
       final services = await device.discoverServices();
 
@@ -180,8 +200,42 @@ class BleService {
       );
 
       // Subscribe to notifications on the response characteristic.
-      await _responseChar!.setNotifyValue(true);
-      _notifySub = _responseChar!.onValueReceived.listen(_onNotification);
+      //
+      // Guard: verify the Notify property is present before subscribing.
+      // After a fresh discoverServices() this should always be true.  If it
+      // is NOT, the discovery returned stale cached data.
+      if (!_responseChar!.properties.notify) {
+        print(
+          'WARNING: Response characteristic is missing the Notify property. '
+          'This usually means iOS returned a stale GATT cache.  '
+          'Go to iOS Settings → Bluetooth → tap (i) next to "Loki PSU" → '
+          '"Forget This Device", then reconnect.',
+        );
+        _notifySupported = false;
+      } else {
+        try {
+          await _responseChar!.setNotifyValue(true);
+          _notifySub =
+              _responseChar!.onValueReceived.listen(_onNotification);
+          _notifySupported = true;
+        } catch (e) {
+          // The characteristic advertises Notify but the CCCD write was
+          // rejected (e.g. iOS apple-code 4 / "Invalid PDU").  This is
+          // almost always caused by iOS using stale ATT handles cached from
+          // a previous firmware version.
+          //
+          // Workaround: fall back to read-after-write so the user can at
+          // least use the app this session.  Log a clear message so the
+          // user knows how to permanently fix it.
+          _notifySupported = false;
+          print(
+            'TLV notify subscription failed (stale GATT cache?): $e\n'
+            'Falling back to read-after-write.  To fix permanently on iOS, '
+            'go to Settings → Bluetooth → tap (i) next to "Loki PSU" → '
+            '"Forget This Device", then reconnect.',
+          );
+        }
+      }
 
       _setState(BleConnectionState.connected);
     } catch (e) {
@@ -234,12 +288,24 @@ class BleService {
   Future<TlvResponse> _sendRequestInternal(Uint8List request) async {
     for (int attempt = 0; attempt < BleConstants.maxRetries; attempt++) {
       try {
-        _responseCompleter = Completer<Uint8List>();
+        Uint8List rawResponse;
 
-        await _requestChar!.write(request.toList(), withoutResponse: false);
-
-        final rawResponse = await _responseCompleter!.future
-            .timeout(BleConstants.requestTimeout);
+        if (_notifySupported) {
+          // ---- Notification path (preferred) ----
+          _responseCompleter = Completer<Uint8List>();
+          await _requestChar!.write(request.toList(), withoutResponse: false);
+          rawResponse = await _responseCompleter!.future
+              .timeout(BleConstants.requestTimeout);
+        } else {
+          // ---- Read-after-write fallback ----
+          // The firmware processes TLV requests synchronously and updates the
+          // response characteristic value before the write-response is sent
+          // back to the client.  A short delay gives the ESP32 time to update
+          // the characteristic value after processing the request.
+          await _requestChar!.write(request.toList(), withoutResponse: false);
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          rawResponse = Uint8List.fromList(await _responseChar!.read());
+        }
 
         return TlvResponseParser.parse(rawResponse);
       } on TimeoutException {
@@ -279,6 +345,7 @@ class BleService {
     _connectionSub = null;
     _requestChar = null;
     _responseChar = null;
+    _notifySupported = true;
     _device = null;
     if (_responseCompleter != null && !_responseCompleter!.isCompleted) {
       _responseCompleter!.completeError(
