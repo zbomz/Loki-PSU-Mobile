@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import '../ble/ble_constants.dart';
 import 'rainmaker_constants.dart';
 
 /// Provisioning progress stages shown to the user.
@@ -41,10 +42,17 @@ class WifiAccessPoint {
 /// Service that handles WiFi provisioning of the ESP32-C3 over BLE.
 ///
 /// Implements the ESP Unified Provisioning protocol (Security1):
-///  1. Scan for provisioning GATT services (`PROV_LOKI_*`)
+///  1. Use the already-connected "Loki PSU-XXXX" BLE device (no separate scan)
 ///  2. Curve25519 key exchange + PoP-derived AES key
 ///  3. Send WiFi SSID + password (encrypted)
 ///  4. Poll for WiFi connection status
+///
+/// Architecture note: this firmware exposes both the Loki TLV service and the
+/// ESP Unified Provisioning GATT service (ff51/ff52/ff53) on a single unified
+/// "Loki PSU-XXXX" BLE advertisement.  There is no separate "PROV_LOKI_…"
+/// provisioning-mode advertisement.  The provisioning handler remains active
+/// permanently (endProvision() is never called after credential success), so
+/// WiFi provisioning is always available on the telemetry connection.
 ///
 /// Uses [flutter_blue_plus] for BLE transport and [cryptography] for crypto.
 class ProvisioningService {
@@ -83,12 +91,13 @@ class ProvisioningService {
   // Scanning for provisioning-capable devices
   // ---------------------------------------------------------------------------
 
-  /// Scan for ESP32 devices advertising the provisioning service.
+  /// Scan for ESP32 devices advertising the Loki PSU service.
   ///
   /// Returns a stream of filtered scan results whose device name starts with
-  /// `PROV_LOKI_`. The stream closes automatically when [timeout] elapses.
-  /// Any error (BT off, permission denied, conflicting scan) is forwarded
-  /// through the stream so callers can surface it in the UI.
+  /// [BleConstants.deviceNamePrefix] (e.g. "Loki PSU-A1B2C3"). The stream
+  /// closes automatically when [timeout] elapses. Any error (BT off,
+  /// permission denied, conflicting scan) is forwarded through the stream so
+  /// callers can surface it in the UI.
   Stream<List<ScanResult>> scanForProvisionableDevices({
     Duration timeout = const Duration(seconds: 10),
   }) {
@@ -119,8 +128,12 @@ class ProvisioningService {
         final sub = FlutterBluePlus.scanResults.listen(
           (results) {
             final filtered = results.where((r) {
+              // Filter by the Loki PSU device name prefix.  The provisioning
+              // service is always available on the same "Loki PSU-XXXX"
+              // advertisement used for telemetry — no separate PROV_LOKI_
+              // mode exists in this firmware.
               return r.device.platformName
-                  .startsWith(RainMakerConstants.provServicePrefix);
+                  .startsWith(BleConstants.deviceNamePrefix);
             }).toList();
             if (!controller.isClosed) controller.add(filtered);
           },
@@ -191,7 +204,7 @@ class ProvisioningService {
         diag.writeln('   connect() done');
       }
 
-      // ---- 2. Discover services & find characteristics ----
+      // ---- 2. Find provisioning characteristics ----
       final services = await device.discoverServices();
       diag.writeln('2. discoverServices: ${services.length} services');
       for (final svc in services) {
@@ -249,12 +262,12 @@ class ProvisioningService {
       try {
         final encrypted = await _aesCtrEncrypt(cmdScanStart, _cipherKey!);
         diag.writeln('   CmdScanStart encrypted: ${encrypted.length} bytes');
-        await scanChar.write(encrypted.toList(), withoutResponse: false);
+        await scanChar.write(encrypted.toList());
         diag.writeln('   CmdScanStart write OK');
       } on FlutterBluePlusException catch (e) {
         diag.writeln('   CmdScanStart FAILED: $e');
         throw Exception(
-          'BLE write failed (Wi-Fi scan start).\n\n'
+          'BLE write failed sending Wi-Fi scan start command.\n\n'
           'Detail: $e\n\n$diag',
         );
       }
@@ -273,12 +286,11 @@ class ProvisioningService {
         try {
           await scanChar.write(
             (await _aesCtrEncrypt(cmdStatus, _cipherKey!)).toList(),
-            withoutResponse: false,
           );
         } on FlutterBluePlusException catch (e) {
           diag.writeln('   poll $pollCount write FAILED: $e');
           throw Exception(
-            'BLE write failed (Wi-Fi scan poll).\n\n'
+            'BLE write failed polling Wi-Fi scan status.\n\n'
             'Detail: $e\n\n$diag',
           );
         }
@@ -328,12 +340,11 @@ class ProvisioningService {
         try {
           await scanChar.write(
             (await _aesCtrEncrypt(cmdResult, _cipherKey!)).toList(),
-            withoutResponse: false,
           );
         } on FlutterBluePlusException catch (e) {
           diag.writeln('   fetch batch $startIndex write FAILED: $e');
           throw Exception(
-            'BLE write failed (Wi-Fi scan results).\n\n'
+            'BLE write failed fetching Wi-Fi scan results.\n\n'
             'Detail: $e\n\n$diag',
           );
         }
@@ -431,6 +442,9 @@ class ProvisioningService {
   }) async {
     try {
       // ---- 1. Connect (if not already connected) ----
+      // The provisioning GATT service (ff51/ff52/ff53) is always present on
+      // the "Loki PSU-XXXX" advertisement alongside the Loki TLV service.
+      // No mode check is needed — provisioning is always available.
       _setStep(ProvisioningStep.connecting);
       _device = device;
 
@@ -452,6 +466,8 @@ class ProvisioningService {
       // Discover services only if characteristics are not already cached from
       // a prior scanWifiNetworks() call.
       if (_sessionChar == null || _configChar == null) {
+        // Always re-discover services for provisioning to avoid stale iOS
+        // GATT cache issues.
         final services = await device.discoverServices();
 
         // Find the provisioning GATT characteristics.
@@ -471,10 +487,9 @@ class ProvisioningService {
               .join(', ');
           throw Exception(
             'ESP provisioning GATT service not found on this device.\n\n'
-            'The Loki PSU must be in provisioning mode (advertising as '
-            'PROV_LOKI_…) before WiFi provisioning can proceed. '
-            'In normal telemetry mode the device only exposes its Loki TLV '
-            'service and cannot be provisioned.\n\n'
+            'The provisioning characteristics (ff51/ff52/ff53) were not '
+            'discovered. This may indicate a firmware issue or a stale iOS '
+            'GATT cache — try disconnecting and reconnecting the device.\n\n'
             'Services found: ${foundServices.isEmpty ? "none" : foundServices}\n'
             'Characteristics found: ${foundChars.isEmpty ? "none" : foundChars}',
           );
@@ -485,7 +500,16 @@ class ProvisioningService {
       // Skipped when scanWifiNetworks() already established the session key.
       if (_cipherKey == null) {
         _setStep(ProvisioningStep.handshake);
-        await _performSecurity1Handshake(pop);
+        try {
+          await _performSecurity1Handshake(pop);
+        } on FlutterBluePlusException catch (e) {
+          throw Exception(
+            'BLE communication error during the Security1 handshake.\n\n'
+            'Make sure the device is powered on and within BLE range, '
+            'then try again.\n\n'
+            'Detail: $e',
+          );
+        }
       }
 
       // ---- 3. Send WiFi credentials ----
@@ -534,17 +558,25 @@ class ProvisioningService {
   ///  - `prov-config`  — WiFi config (set SSID/password, get status)
   ///  - `proto-ver`    — Protocol version (optional)
   void _findProvisioningCharacteristics(List<BluetoothService> services) {
+    // Log all discovered services/characteristics for diagnostics.
+    for (final service in services) {
+      print('  Service: ${service.serviceUuid}');
+      for (final char in service.characteristics) {
+        print('    Char: ${char.characteristicUuid}'
+            ' props: R=${char.properties.read}'
+            ' W=${char.properties.write}'
+            ' WNR=${char.properties.writeWithoutResponse}'
+            ' N=${char.properties.notify}');
+      }
+    }
+
     for (final service in services) {
       for (final char in service.characteristics) {
         // ESP provisioning uses custom 128-bit UUIDs.
-        // The characteristic purpose is typically identified by reading
-        // its user-description descriptor or by UUID mapping.
-        //
-        // Common UUID patterns for ESP provisioning:
-        // Service: 021a9004-0382-4aea-bff4-6b3f1c5adfb4
-        // prov-session: 021aff51-0382-4aea-bff4-6b3f1c5adfb4
-        // prov-config:  021aff52-0382-4aea-bff4-6b3f1c5adfb4
-        // prov-scan:    021aff53-0382-4aea-bff4-6b3f1c5adfb4
+        // The characteristic purpose is identified by UUID substring:
+        //   prov-session: contains 'ff51'
+        //   prov-config:  contains 'ff52'
+        //   prov-scan:    contains 'ff53'
         final uuid = char.characteristicUuid.toString().toLowerCase();
         if (uuid.contains('ff51')) {
           _sessionChar = char;
@@ -556,31 +588,18 @@ class ProvisioningService {
       }
     }
 
-    // Fallback: if we didn't find by UUID pattern, try by service index.
-    // Some ESP-IDF versions use sequential UUIDs within a single service.
-    if (_sessionChar == null || _configChar == null) {
-      for (final service in services) {
-        final chars = service.characteristics;
-        if (chars.length >= 2) {
-          // Check if this looks like a provisioning service
-          // (has at least 2 writable characteristics)
-          final writableChars = chars
-              .where((c) =>
-                  c.properties.write || c.properties.writeWithoutResponse)
-              .toList();
-          if (writableChars.length >= 2) {
-            // Skip our own TLV service (by checking known Loki UUID)
-            final serviceUuid = service.serviceUuid.toString().toLowerCase();
-            if (serviceUuid.contains('4c6f6b69')) continue;
-
-            _sessionChar ??= writableChars[0];
-            _configChar ??= writableChars[1];
-            if (writableChars.length >= 3) {
-              _scanChar ??= writableChars[2];
-            }
-          }
-        }
-      }
+    // NOTE: No fallback guessing.  If the provisioning characteristics aren't
+    // found by UUID, something is wrong (firmware issue or stale GATT cache).
+    // Writing to randomly-picked characteristics from other services (GAP,
+    // DIS, etc.) causes apple-code 4 errors and firmware disconnections.
+    if (_sessionChar != null) {
+      print('Found prov-session: ${_sessionChar!.characteristicUuid}');
+    }
+    if (_configChar != null) {
+      print('Found prov-config: ${_configChar!.characteristicUuid}');
+    }
+    if (_scanChar != null) {
+      print('Found prov-scan: ${_scanChar!.characteristicUuid}');
     }
   }
 
@@ -622,7 +641,7 @@ class ProvisioningService {
 
     // Step 2: Send SessionCmd0 (client public key)
     final cmd0 = _buildSessionCmd0(clientPublicKeyBytes);
-    await _sessionChar!.write(cmd0.toList(), withoutResponse: false);
+    await _sessionChar!.write(cmd0.toList());
 
     // Step 3: Read SessionResp0 (device public key + device random)
     final resp0Raw = await _sessionChar!.read();
@@ -649,7 +668,7 @@ class ProvisioningService {
     final encryptedVerify = await _aesCtrEncrypt(
         Uint8List.fromList(deviceRandom), _cipherKey!);
     final cmd1 = _buildSessionCmd1(encryptedVerify);
-    await _sessionChar!.write(cmd1.toList(), withoutResponse: false);
+    await _sessionChar!.write(cmd1.toList());
 
     // Step 6: Read SessionResp1 (verification result)
     final resp1Raw = await _sessionChar!.read();
@@ -683,7 +702,7 @@ class ProvisioningService {
 
     // Encrypt the complete payload before writing to the characteristic.
     final encrypted = await _aesCtrEncrypt(fullPayload, _cipherKey!);
-    await _configChar!.write(encrypted.toList(), withoutResponse: false);
+    await _configChar!.write(encrypted.toList());
 
     // Read and decrypt the response before parsing.
     final respEncrypted = Uint8List.fromList(await _configChar!.read());
@@ -706,7 +725,7 @@ class ProvisioningService {
         // be decrypted before parsing.
         final statusReq = _buildGetStatusMessage();
         final encryptedReq = await _aesCtrEncrypt(statusReq, key);
-        await _configChar!.write(encryptedReq.toList(), withoutResponse: false);
+        await _configChar!.write(encryptedReq.toList());
 
         final respEncrypted = Uint8List.fromList(await _configChar!.read());
         final resp = await _aesCtrDecrypt(respEncrypted, key);
@@ -773,7 +792,7 @@ class ProvisioningService {
   Uint8List _buildSessionCmd1(Uint8List encryptedVerify) {
     final sc1 = _protoBytes(2, encryptedVerify);
     final sec1 = Uint8List.fromList([
-      ..._protoVarint(1, 1), // Session_Command1
+      ..._protoVarint(1, 2), // Session_Command1 (enum value 2)
       ..._protoBytes(22, sc1),
     ]);
     return Uint8List.fromList([
