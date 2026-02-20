@@ -167,130 +167,197 @@ class ProvisioningService {
   }) async {
     _device = device;
 
-    // ---- 1. Connect if not already connected ----
-    _weConnected = !device.isConnected;
-    if (_weConnected) {
-      _connectionSub = device.connectionState.listen((s) {
-        if (s == BluetoothConnectionState.disconnected) {
-          _cleanup();
-        }
-      });
-      await device.connect(license: License.free, autoConnect: false);
+    // Diagnostic trace — accumulates step-by-step so any error message
+    // includes a full picture of how far we got.
+    final diag = StringBuffer();
+
+    String charInfo(BluetoothCharacteristic c) {
+      final p = c.properties;
+      return '${c.characteristicUuid} '
+          '[R=${p.read} W=${p.write} WNR=${p.writeWithoutResponse} N=${p.notify}]';
     }
 
-    // ---- 2. Discover services & find characteristics ----
-    final services = await device.discoverServices();
-    _findProvisioningCharacteristics(services);
-    _findScanCharacteristic(services);
+    try {
+      // ---- 1. Connect if not already connected ----
+      _weConnected = !device.isConnected;
+      diag.writeln('1. connected=${device.isConnected}, weConnect=$_weConnected');
+      if (_weConnected) {
+        _connectionSub = device.connectionState.listen((s) {
+          if (s == BluetoothConnectionState.disconnected) {
+            _cleanup();
+          }
+        });
+        await device.connect(license: License.free, autoConnect: false);
+        diag.writeln('   connect() done');
+      }
 
-    if (_sessionChar == null || _configChar == null) {
-      throw Exception('Provisioning GATT characteristics not found on device');
-    }
-
-    // ---- 3. Security1 handshake (establishes _cipherKey) ----
-    _setStep(ProvisioningStep.handshake);
-    await _performSecurity1Handshake(pop);
-
-    // ---- 4. Start Wi-Fi scan on the ESP32 ----
-    // WiFiScanPayload: field 1 (varint) = 0 (TypeCmdScanStart)
-    //                 field 10 (bytes) = CmdScanStart {}
-    // CmdScanStart fields: blocking(1)=false(0), passive(2)=false(0),
-    //                      group_channels(3)=0, period_ms(4)=120
-    //
-    // All writes to the prov-scan characteristic MUST be encrypted with the
-    // session key established during the Security1 handshake.  The ESP32
-    // protocomm_security1 layer decrypts every incoming byte before parsing.
-    // Likewise, all responses read from the characteristic are encrypted and
-    // must be decrypted before parsing.
-    final cmdScanStart = Uint8List.fromList([
-      ..._protoVarint(1, 0), // msg type = TypeCmdScanStart
-      ..._protoBytes(
-        10,
-        Uint8List.fromList([
-          ..._protoVarint(1, 0), // blocking = false
-          ..._protoVarint(2, 0), // passive = false
-          ..._protoVarint(3, 0), // group_channels = 0
-          ..._protoVarint(4, 120), // period_ms = 120
-        ]),
-      ),
-    ]);
-
-    final scanChar = _scanChar ?? _configChar!;
-    await scanChar.write(
-      (await _aesCtrEncrypt(cmdScanStart, _cipherKey!)).toList(),
-      withoutResponse: false,
-    );
-
-    // ---- 5. Poll until scan is finished ----
-    final deadline = DateTime.now().add(scanTimeout);
-    int apCount = 0;
-    while (DateTime.now().isBefore(deadline)) {
-      // Send TypeCmdScanStatus (2)
-      final cmdStatus = Uint8List.fromList([
-        ..._protoVarint(1, 2), // msg type = TypeCmdScanStatus
-        ..._protoBytes(12, Uint8List(0)), // empty CmdScanStatus {}
-      ]);
-      await scanChar.write(
-        (await _aesCtrEncrypt(cmdStatus, _cipherKey!)).toList(),
-        withoutResponse: false,
-      );
-
-      final respEncrypted = Uint8List.fromList(await scanChar.read());
-      final respRaw = await _aesCtrDecrypt(respEncrypted, _cipherKey!);
-      // RespScanStatus is at field 13 of WiFiScanPayload
-      final respStatus = _protoFindBytes(respRaw, 13);
-      if (respStatus != null) {
-        // scan_finished is field 1 (varint), result_count is field 2 (varint)
-        final finished = _protoFindVarint(respStatus, 1);
-        final count = _protoFindVarint(respStatus, 2);
-        if (finished == 1) {
-          apCount = count ?? 0;
-          break;
+      // ---- 2. Discover services & find characteristics ----
+      final services = await device.discoverServices();
+      diag.writeln('2. discoverServices: ${services.length} services');
+      for (final svc in services) {
+        diag.writeln('   svc ${svc.serviceUuid}');
+        for (final c in svc.characteristics) {
+          diag.writeln('     ${charInfo(c)}');
         }
       }
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-    }
 
-    if (apCount == 0) return [];
+      _findProvisioningCharacteristics(services);
+      _findScanCharacteristic(services);
 
-    // ---- 6. Fetch results in batches of 4 ----
-    const batchSize = 4;
-    final seen = <String>{};
-    final results = <WifiAccessPoint>[];
+      diag.writeln('   session=${_sessionChar != null ? charInfo(_sessionChar!) : "null"}');
+      diag.writeln('   config=${_configChar != null ? charInfo(_configChar!) : "null"}');
+      diag.writeln('   scan=${_scanChar != null ? charInfo(_scanChar!) : "null"}');
 
-    for (int startIndex = 0; startIndex < apCount; startIndex += batchSize) {
-      final count =
-          (startIndex + batchSize > apCount) ? apCount - startIndex : batchSize;
+      if (_sessionChar == null || _configChar == null) {
+        throw Exception(
+          'ESP provisioning characteristics not found.\n\n$diag',
+        );
+      }
 
-      // CmdScanResult: start_index(1)=startIndex, count(2)=count
-      final cmdResult = Uint8List.fromList([
-        ..._protoVarint(1, 4), // msg type = TypeCmdScanResult
+      // ---- 3. Security1 handshake (establishes _cipherKey) ----
+      _setStep(ProvisioningStep.handshake);
+      diag.writeln('3. handshake start');
+      try {
+        await _performSecurity1Handshake(pop);
+      } on FlutterBluePlusException catch (e) {
+        diag.writeln('   FAILED: $e');
+        throw Exception(
+          'BLE error during Security1 handshake.\n\n'
+          'Detail: $e\n\n$diag',
+        );
+      }
+      diag.writeln('   handshake OK, cipherKey=${_cipherKey!.length} bytes');
+
+      // ---- 4. Start Wi-Fi scan on the ESP32 ----
+      final cmdScanStart = Uint8List.fromList([
+        ..._protoVarint(1, 0), // msg type = TypeCmdScanStart
         ..._protoBytes(
-          14,
+          10,
           Uint8List.fromList([
-            ..._protoVarint(1, startIndex),
-            ..._protoVarint(2, count),
+            ..._protoVarint(1, 0), // blocking = false
+            ..._protoVarint(2, 0), // passive = false
+            ..._protoVarint(3, 0), // group_channels = 0
+            ..._protoVarint(4, 120), // period_ms = 120
           ]),
         ),
       ]);
-      await scanChar.write(
-        (await _aesCtrEncrypt(cmdResult, _cipherKey!)).toList(),
-        withoutResponse: false,
-      );
 
-      final respEncrypted = Uint8List.fromList(await scanChar.read());
-      final respRaw = await _aesCtrDecrypt(respEncrypted, _cipherKey!);
-      // RespScanResult is at field 15 of WiFiScanPayload
-      final respResult = _protoFindBytes(respRaw, 15);
-      if (respResult == null) continue;
+      final scanChar = _scanChar ?? _configChar!;
+      diag.writeln('4. scanChar=${charInfo(scanChar)} '
+          '(using ${_scanChar != null ? "prov-scan" : "prov-config"})');
 
-      // entries are repeated field 1 (length-delimited) in RespScanResult
-      _parseWifiScanEntries(respResult, seen, results);
+      try {
+        final encrypted = await _aesCtrEncrypt(cmdScanStart, _cipherKey!);
+        diag.writeln('   CmdScanStart encrypted: ${encrypted.length} bytes');
+        await scanChar.write(encrypted.toList(), withoutResponse: false);
+        diag.writeln('   CmdScanStart write OK');
+      } on FlutterBluePlusException catch (e) {
+        diag.writeln('   CmdScanStart FAILED: $e');
+        throw Exception(
+          'BLE write failed (Wi-Fi scan start).\n\n'
+          'Detail: $e\n\n$diag',
+        );
+      }
+
+      // ---- 5. Poll until scan is finished ----
+      diag.writeln('5. polling scan status');
+      final deadline = DateTime.now().add(scanTimeout);
+      int apCount = 0;
+      int pollCount = 0;
+      while (DateTime.now().isBefore(deadline)) {
+        final cmdStatus = Uint8List.fromList([
+          ..._protoVarint(1, 2), // msg type = TypeCmdScanStatus
+          ..._protoBytes(12, Uint8List(0)), // empty CmdScanStatus {}
+        ]);
+
+        try {
+          await scanChar.write(
+            (await _aesCtrEncrypt(cmdStatus, _cipherKey!)).toList(),
+            withoutResponse: false,
+          );
+        } on FlutterBluePlusException catch (e) {
+          diag.writeln('   poll $pollCount write FAILED: $e');
+          throw Exception(
+            'BLE write failed (Wi-Fi scan poll).\n\n'
+            'Detail: $e\n\n$diag',
+          );
+        }
+
+        final respEncrypted = Uint8List.fromList(await scanChar.read());
+        final respRaw = await _aesCtrDecrypt(respEncrypted, _cipherKey!);
+        final respStatus = _protoFindBytes(respRaw, 13);
+        if (respStatus != null) {
+          final finished = _protoFindVarint(respStatus, 1);
+          final count = _protoFindVarint(respStatus, 2);
+          if (finished == 1) {
+            apCount = count ?? 0;
+            diag.writeln('   scan done after $pollCount polls, $apCount APs');
+            break;
+          }
+        }
+        pollCount++;
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+
+      if (apCount == 0) {
+        diag.writeln('   no APs found');
+        return [];
+      }
+
+      // ---- 6. Fetch results in batches of 4 ----
+      diag.writeln('6. fetching $apCount results');
+      const batchSize = 4;
+      final seen = <String>{};
+      final results = <WifiAccessPoint>[];
+
+      for (int startIndex = 0; startIndex < apCount; startIndex += batchSize) {
+        final count =
+            (startIndex + batchSize > apCount) ? apCount - startIndex : batchSize;
+
+        final cmdResult = Uint8List.fromList([
+          ..._protoVarint(1, 4), // msg type = TypeCmdScanResult
+          ..._protoBytes(
+            14,
+            Uint8List.fromList([
+              ..._protoVarint(1, startIndex),
+              ..._protoVarint(2, count),
+            ]),
+          ),
+        ]);
+
+        try {
+          await scanChar.write(
+            (await _aesCtrEncrypt(cmdResult, _cipherKey!)).toList(),
+            withoutResponse: false,
+          );
+        } on FlutterBluePlusException catch (e) {
+          diag.writeln('   fetch batch $startIndex write FAILED: $e');
+          throw Exception(
+            'BLE write failed (Wi-Fi scan results).\n\n'
+            'Detail: $e\n\n$diag',
+          );
+        }
+
+        final respEncrypted = Uint8List.fromList(await scanChar.read());
+        final respRaw = await _aesCtrDecrypt(respEncrypted, _cipherKey!);
+        final respResult = _protoFindBytes(respRaw, 15);
+        if (respResult == null) continue;
+
+        _parseWifiScanEntries(respResult, seen, results);
+      }
+
+      results.sort((a, b) => b.rssi.compareTo(a.rssi));
+      diag.writeln('   returning ${results.length} unique networks');
+      return results;
+    } catch (e) {
+      // Clean up stale state so the next attempt starts fresh.
+      _sessionChar = null;
+      _configChar = null;
+      _scanChar = null;
+      _cipherKey = null;
+      _cipherByteCount = 0;
+      rethrow;
     }
-
-    // Sort by signal strength (strongest first)
-    results.sort((a, b) => b.rssi.compareTo(a.rssi));
-    return results;
   }
 
   /// Parse all repeated `WiFiScanResult` entries from a `RespScanResult` blob.
