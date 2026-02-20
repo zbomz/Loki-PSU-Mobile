@@ -76,11 +76,12 @@ jobs:
         cat > fastlane/Fastfile << EOF
         lane :beta do
           build_app(
+            workspace: "ios/Runner.xcworkspace",
             scheme: "Runner",
             export_method: "app-store",
             export_options: {
               provisioningProfiles: {
-                "com.example.loki-psu" => "Loki PSU App Store Profile"
+                "com.zbomz.loki-psu" => "Loki PSU App Store Profile"
               }
             }
           )
