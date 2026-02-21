@@ -277,6 +277,23 @@ class ProvisioningService {
         );
       }
 
+      // Read and decrypt the RespScanStart response.
+      // ESP-IDF protocomm uses a single AES-CTR keystream for both decrypt
+      // (incoming requests) and encrypt (outgoing responses).  The firmware
+      // advanced the counter when it encrypted RespScanStart, so the app
+      // MUST decrypt it to keep its own counter in sync — otherwise every
+      // subsequent encrypt/decrypt will produce garbage.
+      try {
+        final respStartEnc = Uint8List.fromList(await scanChar.read());
+        final respStartRaw =
+            await _aesCtrDecrypt(respStartEnc, _cipherKey!);
+        diag.writeln('   RespScanStart: ${respStartRaw.length} bytes');
+      } on Exception catch (e) {
+        diag.writeln('   RespScanStart read FAILED: $e');
+        // Non-fatal: if the read fails, the keystream may be desynchronised
+        // but we still try polling.
+      }
+
       // ---- 5. Poll until scan is finished ----
       diag.writeln('5. polling scan status');
       final deadline = DateTime.now().add(scanTimeout);
