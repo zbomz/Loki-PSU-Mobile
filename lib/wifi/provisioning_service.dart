@@ -759,6 +759,29 @@ class ProvisioningService {
     if (!_parseConfigResponseSuccess(resp)) {
       throw Exception('Device rejected WiFi credentials');
     }
+
+    // Send CmdApplyConfig to trigger the actual WiFi connection attempt.
+    // ESP-IDF provisioning requires this step after SetConfig — without it,
+    // the credentials are stored but the device never tries to connect.
+    final applyPayload = Uint8List.fromList([
+      ..._protoVarint(1, 4), // msg type = TypeCmdApplyConfig
+      ..._protoBytes(14, Uint8List(0)), // empty CmdApplyConfig {}
+    ]);
+    final encryptedApply = await _aesCtrEncrypt(applyPayload, _cipherKey!);
+    await _configChar!.write(encryptedApply.toList());
+
+    // Read and decrypt the RespApplyConfig to keep the AES-CTR keystream
+    // in sync and confirm the device accepted the command.
+    final applyRespEnc = Uint8List.fromList(await _configChar!.read());
+    final applyResp = await _aesCtrDecrypt(applyRespEnc, _cipherKey!);
+    // RespApplyConfig: field 15 (bytes), with field 1 (varint) = status
+    final applyRespBody = _protoFindBytes(applyResp, 15);
+    if (applyRespBody != null) {
+      final applyStatus = _protoFindVarint(applyRespBody, 1);
+      if (applyStatus != null && applyStatus != 0) {
+        throw Exception('Device rejected ApplyConfig (status=$applyStatus)');
+      }
+    }
   }
 
   /// Poll the device for WiFi connection status until connected or timeout.
