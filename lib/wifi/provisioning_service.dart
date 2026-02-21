@@ -838,9 +838,11 @@ class ProvisioningService {
     if (sec1 == null) return false;
     final sr1 = _protoFindBytes(sec1, 23);
     if (sr1 == null) return false;
-    // status field 1 = 0 means success
+    // status field 1 = 0 means success.
+    // In proto3, the default value (0) is omitted from the wire, so a
+    // missing status field also means success.
     final status = _protoFindVarint(sr1, 1);
-    return status == 0;
+    return status == null || status == 0;
   }
 
   /// Extract the device_verify_data (field 3) from a SessionResp1 message.
@@ -882,8 +884,9 @@ class ProvisioningService {
     // WiFiConfigPayload: field 13 (bytes) = RespSetConfig
     final resp = _protoFindBytes(data, 13);
     if (resp == null) return false;
+    // In proto3 the default value (0 = success) is omitted from the wire.
     final status = _protoFindVarint(resp, 1);
-    return status == 0;
+    return status == null || status == 0;
   }
 
   /// Parse WiFi connection status.
