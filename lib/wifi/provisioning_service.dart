@@ -938,12 +938,12 @@ class ProvisioningService {
 
     // RespGetStatus: field 2 (varint) = sta_state
     //   0 = Connected, 1 = Connecting, 2 = Disconnected, 3 = ConnectionFailed
+    // In proto3, Connected (0) is the default value and is omitted from the
+    // wire.  A missing sta_state field therefore means Connected.
     final staState = _protoFindVarint(resp, 2);
-    if (staState == null) return _WifiStatus.connecting;
+    if (staState == null || staState == 0) return _WifiStatus.connected;
 
     switch (staState) {
-      case 0:
-        return _WifiStatus.connected;
       case 1:
         return _WifiStatus.connecting;
       default:
