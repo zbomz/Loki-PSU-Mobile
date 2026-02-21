@@ -48,7 +48,7 @@ class WifiAccessPoint {
 ///  4. Poll for WiFi connection status
 ///
 /// Architecture note: this firmware exposes both the Loki TLV service and the
-/// ESP Unified Provisioning GATT service (ff51/ff52/ff53) on a single unified
+/// ESP Unified Provisioning GATT service (ff50/ff51/ff52) on a single unified
 /// "Loki PSU-XXXX" BLE advertisement.  There is no separate "PROV_LOKI_…"
 /// provisioning-mode advertisement.  The provisioning handler remains active
 /// permanently (endProvision() is never called after credential success), so
@@ -448,7 +448,7 @@ class ProvisioningService {
   }) async {
     try {
       // ---- 1. Connect (if not already connected) ----
-      // The provisioning GATT service (ff51/ff52/ff53) is always present on
+      // The provisioning GATT service (ff50/ff51/ff52) is always present on
       // the "Loki PSU-XXXX" advertisement alongside the Loki TLV service.
       // No mode check is needed — provisioning is always available.
       _setStep(ProvisioningStep.connecting);
@@ -493,7 +493,7 @@ class ProvisioningService {
               .join(', ');
           throw Exception(
             'ESP provisioning GATT service not found on this device.\n\n'
-            'The provisioning characteristics (ff51/ff52/ff53) were not '
+            'The provisioning characteristics (ff50/ff51/ff52) were not '
             'discovered. This may indicate a firmware issue or a stale iOS '
             'GATT cache — try disconnecting and reconnecting the device.\n\n'
             'Services found: ${foundServices.isEmpty ? "none" : foundServices}\n'
@@ -580,16 +580,17 @@ class ProvisioningService {
       for (final char in service.characteristics) {
         // ESP provisioning uses custom 128-bit UUIDs.
         // The characteristic purpose is identified by UUID substring:
+        //   prov-scan:    contains 'ff50'
         //   prov-session: contains 'ff51'
         //   prov-config:  contains 'ff52'
-        //   prov-scan:    contains 'ff53'
+        //   proto-ver:    contains 'ff53'  (not used by the app)
         final uuid = char.characteristicUuid.toString().toLowerCase();
-        if (uuid.contains('ff51')) {
+        if (uuid.contains('ff50')) {
+          _scanChar = char;
+        } else if (uuid.contains('ff51')) {
           _sessionChar = char;
         } else if (uuid.contains('ff52')) {
           _configChar = char;
-        } else if (uuid.contains('ff53')) {
-          _scanChar = char;
         }
       }
     }
@@ -609,14 +610,14 @@ class ProvisioningService {
     }
   }
 
-  /// Locate the prov-scan characteristic (UUID containing `ff53`) within
+  /// Locate the prov-scan characteristic (UUID containing `ff50`) within
   /// already-discovered services.  Called after [_findProvisioningCharacteristics].
   void _findScanCharacteristic(List<BluetoothService> services) {
     if (_scanChar != null) return; // already found during primary discovery
     for (final service in services) {
       for (final char in service.characteristics) {
         final uuid = char.characteristicUuid.toString().toLowerCase();
-        if (uuid.contains('ff53')) {
+        if (uuid.contains('ff50')) {
           _scanChar = char;
           return;
         }
