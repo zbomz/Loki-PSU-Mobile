@@ -67,8 +67,13 @@ class ProvisioningService {
   /// Only used by [_cleanup] to decide whether to call disconnect().
   bool _weConnected = false;
 
-  /// AES cipher key derived from Curve25519 shared secret + PoP.
+  /// AES cipher key derived from Curve25519 shared secret XOR SHA256(PoP).
   Uint8List? _cipherKey;
+
+  /// AES-CTR nonce: the 16-byte device_random from SessionResp0.
+  /// ESP-IDF Security1 uses device_random as the initial nonce/counter for
+  /// all AES-CTR operations in the session.
+  Uint8List? _nonce;
 
   /// Running byte count into the AES-CTR keystream for this session.
   /// The ESP Security1 AES-CTR state is stateful across all encrypt/decrypt
@@ -366,6 +371,7 @@ class ProvisioningService {
       _configChar = null;
       _scanChar = null;
       _cipherKey = null;
+      _nonce = null;
       _cipherByteCount = 0;
       rethrow;
     }
@@ -657,24 +663,49 @@ class ProvisioningService {
     final sharedSecretBytes =
         Uint8List.fromList(await sharedSecret.extractBytes());
 
-    // Derive AES key: SHA256(shared_secret + pop)
+    // Derive AES key: shared_secret XOR SHA256(pop)
+    // ESP-IDF Security1 XORs the raw shared secret with the SHA-256 hash of
+    // the Proof-of-Possession string.  It does NOT concatenate + hash.
     final sha256 = Sha256();
     final popBytes = utf8.encode(pop);
-    final keyMaterial = Uint8List.fromList([...sharedSecretBytes, ...popBytes]);
-    final hash = await sha256.hash(keyMaterial);
-    _cipherKey = Uint8List.fromList(hash.bytes);
+    final popHash = await sha256.hash(popBytes);
+    final popHashBytes = Uint8List.fromList(popHash.bytes);
+    final symKey = Uint8List(32);
+    for (int i = 0; i < 32; i++) {
+      symKey[i] = sharedSecretBytes[i] ^ popHashBytes[i];
+    }
+    _cipherKey = symKey;
 
-    // Step 5: Send SessionCmd1 (encrypted device_random as verification)
+    // Set the AES-CTR nonce to device_random (16 bytes) and reset the
+    // keystream byte counter.  ESP-IDF uses device_random as the initial
+    // nonce/counter block for all AES-CTR operations in this session.
+    _nonce = Uint8List.fromList(deviceRandom);
+    _cipherByteCount = 0;
+
+    // Step 5: Send SessionCmd1 (encrypted device public key as verification)
+    // ESP-IDF decrypts this and compares it against the device's own public
+    // key.  The client must encrypt the *device* public key (32 bytes), NOT
+    // the device_random.
     final encryptedVerify = await _aesCtrEncrypt(
-        Uint8List.fromList(deviceRandom), _cipherKey!);
+        Uint8List.fromList(devicePublicKeyBytes), _cipherKey!);
     final cmd1 = _buildSessionCmd1(encryptedVerify);
     await _sessionChar!.write(cmd1.toList());
 
     // Step 6: Read SessionResp1 (verification result)
+    // The response contains device_verify_data: the device encrypts the
+    // *client* public key.  We must decrypt it to advance the AES-CTR
+    // keystream (ESP-IDF consumed 32 bytes here) and optionally verify it.
     final resp1Raw = await _sessionChar!.read();
     final resp1 = Uint8List.fromList(resp1Raw);
     if (!_parseSessionResp1Success(resp1)) {
       throw Exception('Security1 handshake failed — incorrect PoP?');
+    }
+
+    // Advance the keystream: extract and decrypt device_verify_data (32 bytes)
+    // so our _cipherByteCount stays aligned with the ESP-IDF AES-CTR state.
+    final deviceVerify = _parseSessionResp1DeviceVerify(resp1);
+    if (deviceVerify != null && deviceVerify.isNotEmpty) {
+      await _aesCtrDecrypt(deviceVerify, _cipherKey!);
     }
   }
 
@@ -812,6 +843,17 @@ class ProvisioningService {
     return status == 0;
   }
 
+  /// Extract the device_verify_data (field 3) from a SessionResp1 message.
+  /// Returns null if the field is not present.
+  Uint8List? _parseSessionResp1DeviceVerify(Uint8List data) {
+    final sec1 = _protoFindBytes(data, 11);
+    if (sec1 == null) return null;
+    final sr1 = _protoFindBytes(sec1, 23);
+    if (sr1 == null) return null;
+    final verifyData = _protoFindBytes(sr1, 3);
+    return verifyData != null ? Uint8List.fromList(verifyData) : null;
+  }
+
   /// Build WiFi config set command (CmdSetConfig).
   Uint8List _buildWifiConfigPayload(String ssid, String password) {
     final ssidBytes = Uint8List.fromList(utf8.encode(ssid));
@@ -881,11 +923,10 @@ class ProvisioningService {
   Future<Uint8List> _aesCtrProcess(Uint8List data, Uint8List key) async {
     final algorithm = AesCtr.with256bits(macAlgorithm: MacAlgorithm.empty);
     final secretKey = SecretKey(key.sublist(0, 32));
-    // Zero nonce: ESP-IDF Security1 initialises the AES-CTR block counter at
-    // all-zeros.  We advance into the keystream via keyStreamIndex rather than
-    // changing the nonce, which is the cleanest way to honour the running
-    // counter without recomputing the block boundary manually.
-    final nonce = Uint8List(16);
+    // ESP-IDF Security1 uses device_random (16 bytes from SessionResp0) as
+    // the initial AES-CTR nonce/counter block.  We advance into the keystream
+    // via keyStreamIndex so every call continues from the correct position.
+    final nonce = _nonce ?? Uint8List(16);
 
     final result = await algorithm.encrypt(
       data,
@@ -1028,6 +1069,7 @@ class ProvisioningService {
     _configChar = null;
     _scanChar = null;
     _cipherKey = null;
+    _nonce = null;
     _cipherByteCount = 0;
     // Only disconnect if we were the ones who established the connection.
     // If the device was already connected (e.g. for BLE telemetry) we must
