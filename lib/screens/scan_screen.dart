@@ -4,7 +4,8 @@ import 'package:provider/provider.dart';
 
 import '../ble/ble_service.dart';
 import '../providers/ble_provider.dart';
-import 'dashboard_screen.dart';
+import '../services/device_history_service.dart';
+import 'main_shell.dart';
 
 /// BLE scan screen — lists discovered Loki PSU devices and allows connecting.
 class ScanScreen extends StatefulWidget {
@@ -140,8 +141,17 @@ class _ScanScreenState extends State<ScanScreen> {
     await ble.connect(result.device);
     if (!context.mounted) return;
     if (ble.isConnected) {
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const DashboardScreen()),
+      // Persist device to history.
+      final name = result.device.platformName.isNotEmpty
+          ? result.device.platformName
+          : 'Unknown';
+      await DeviceHistoryService()
+          .addOrUpdate(result.device.remoteId.toString(), name);
+
+      if (!context.mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const MainShell()),
+        (route) => false,
       );
     }
   }
