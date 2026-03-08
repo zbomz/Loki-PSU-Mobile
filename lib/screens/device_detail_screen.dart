@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../ble/ble_service.dart';
@@ -100,48 +101,87 @@ class DeviceDetailScreen extends StatelessWidget {
                       value: psu.outputEnable,
                       onChanged: (v) => psuProvider.writeBool(
                           ProtocolTag.psuOutputEnable, v),
+                      info: 'Master power switch. When disabled, the PSU '
+                          'immediately shuts down all output and clears '
+                          'fault conditions. Does not persist across '
+                          'reboots — the PSU always boots with output enabled.',
                     ),
                     _BoolConfigTile(
                       label: 'Voltage Regulation Enable',
                       value: psu.voltageRegulationEnable,
                       onChanged: (v) => psuProvider.writeBool(
                           ProtocolTag.psuVoltageRegulationEnable, v),
+                      info: 'Controls the voltage regulation feedback loop. '
+                          'When enabled, the PSU continuously adjusts PWM '
+                          'duty cycle to maintain the target voltage. When '
+                          'disabled, the duty cycle freezes and output '
+                          'voltage will drift with load changes.',
                     ),
                     _BoolConfigTile(
                       label: 'Max Power Shutoff Enable',
                       value: psu.maxPowerShutoffEnable,
                       onChanged: (v) => psuProvider.writeBool(
                           ProtocolTag.psuMaxPowerShutoffEnable, v),
+                      info: 'Safety feature that shuts down the PSU if power '
+                          'consumption exceeds the configured threshold '
+                          '(default 1320W). Prevents circuit breaker trips '
+                          'and electrical hazards. Highly recommended to '
+                          'keep enabled.',
                     ),
                     _BoolConfigTile(
                       label: 'Thermostat Enable',
                       value: psu.thermostatEnable,
                       onChanged: (v) => psuProvider.writeBool(
                           ProtocolTag.psuThermostatEnable, v),
+                      info: 'Monitors inlet air temperature and disables the '
+                          'PSU if it exceeds the target temperature. Uses '
+                          '1°C hysteresis to prevent oscillation. Useful for '
+                          'controlling ambient temperature in enclosed spaces.',
                     ),
                     _BoolConfigTile(
                       label: 'Fan Silence Enable',
                       value: psu.silenceFanEnable,
                       onChanged: (v) => psuProvider.writeBool(
                           ProtocolTag.psuSilenceFanEnable, v),
+                      info: 'Reduces PSU fan speed for quieter operation by '
+                          'pulling down the fan control voltage. Warning: '
+                          'this disables the PSU\'s hardware over-temperature '
+                          'protection, so software OTP is automatically '
+                          'enabled and cannot be turned off while this is on.',
                     ),
                     _BoolConfigTile(
                       label: 'Spoof Above Max Voltage Enable',
                       value: psu.spoofAboveMaxVoltageEnable,
                       onChanged: (v) => psuProvider.writeBool(
                           ProtocolTag.spoofAboveMaxOutputVoltageEnable, v),
+                      info: 'When a miner requests voltage above the PSU\'s '
+                          'hardware maximum (13.9V), the PSU clamps to 13.9V '
+                          'internally. With this enabled, the PSU echoes back '
+                          'the requested voltage to the miner. When disabled, '
+                          'it reports the actual clamped voltage.',
                     ),
                     _BoolConfigTile(
                       label: 'Auto Retry After Fault Enable',
                       value: psu.autoRetryAfterFaultEnable,
                       onChanged: (v) => psuProvider.writeBool(
                           ProtocolTag.automaticRetryAfterPowerFaultEnable, v),
+                      info: 'Automatically restarts the PSU after a power '
+                          'fault (non-thermal) once the configured timeout '
+                          'elapses. Does not retry during OTP or thermostat '
+                          'faults. Useful for recovering from transient '
+                          'power issues without manual intervention.',
                     ),
                     _BoolConfigTile(
                       label: 'OTP Enable',
                       value: psu.otpEnable,
                       onChanged: (v) =>
                           psuProvider.writeBool(ProtocolTag.psuOtpEnable, v),
+                      info: 'Software over-temperature protection. Shuts down '
+                          'the PSU if internal temperature exceeds the '
+                          'threshold (default 75°C), and re-enables when it '
+                          'drops 7°C below. Cannot be disabled while Fan '
+                          'Silence is enabled — it is the only thermal '
+                          'protection in that mode.',
                     ),
 
                     const SizedBox(height: 20),
@@ -149,40 +189,81 @@ class DeviceDetailScreen extends StatelessWidget {
                     // Float values
                     const _SectionHeader(title: 'Configuration — Values'),
                     const SizedBox(height: 4),
-                    _FloatConfigTile(
+                    _PickerConfigTile(
                       label: 'Target Output Voltage',
                       value: psu.targetOutputVoltage,
                       unit: 'V',
-                      onEdit: (v) => psuProvider.writeFloat(
+                      min: 11.9,
+                      max: 13.9,
+                      step: 0.1,
+                      decimals: 1,
+                      onChanged: (v) => psuProvider.writeFloat(
                           ProtocolTag.psuTargetOutputVoltage, v),
+                      info: 'The voltage setpoint the PSU regulates to when '
+                          'voltage regulation is enabled. The PSU adjusts '
+                          'PWM duty cycle to maintain this voltage under '
+                          'varying load conditions.',
                     ),
-                    _FloatConfigTile(
+                    _PickerConfigTile(
                       label: 'Max Power Threshold',
                       value: psu.maxPowerThreshold,
                       unit: 'W',
-                      onEdit: (v) => psuProvider.writeFloat(
+                      min: 100,
+                      max: 1450,
+                      step: 10,
+                      decimals: 0,
+                      onChanged: (v) => psuProvider.writeFloat(
                           ProtocolTag.maxPsuOutputPowerThreshold, v),
+                      info: 'The power limit used by Max Power Shutoff. If '
+                          'measured power exceeds this value, the PSU shuts '
+                          'down. Default is 1320W (110V x 15A x 0.8 safety '
+                          'factor). Maximum allowed is 1920W.',
                     ),
-                    _FloatConfigTile(
+                    _PickerConfigTile(
                       label: 'Target Inlet Temperature',
                       value: psu.targetInletTemperature,
                       unit: '°C',
-                      onEdit: (v) => psuProvider.writeFloat(
+                      min: -20,
+                      max: 50,
+                      step: 1,
+                      decimals: 0,
+                      onChanged: (v) => psuProvider.writeFloat(
                           ProtocolTag.targetPsuInletTemperature, v),
+                      info: 'The temperature setpoint used by the thermostat. '
+                          'When inlet air temperature exceeds this value by '
+                          '1°C, the PSU shuts down. It re-enables when '
+                          'temperature drops 1°C below. Range: -20°C to 50°C. '
+                          'Default: 21°C.',
                     ),
-                    _FloatConfigTile(
+                    _PickerConfigTile(
                       label: 'Power Fault Timeout',
                       value: psu.powerFaultTimeout,
                       unit: 's',
-                      onEdit: (v) => psuProvider.writeFloat(
+                      min: 1,
+                      max: 86400,
+                      step: 1,
+                      decimals: 0,
+                      onChanged: (v) => psuProvider.writeFloat(
                           ProtocolTag.powerFaultTimeout, v),
+                      info: 'How long to wait before automatically restarting '
+                          'the PSU after a power fault, when Auto Retry is '
+                          'enabled. Range: 1 second to 86,400 seconds '
+                          '(24 hours). Default: 10 seconds.',
                     ),
-                    _FloatConfigTile(
+                    _PickerConfigTile(
                       label: 'OTP Threshold',
                       value: psu.otpThreshold,
                       unit: '°C',
-                      onEdit: (v) => psuProvider.writeFloat(
+                      min: 40,
+                      max: 85,
+                      step: 1,
+                      decimals: 0,
+                      onChanged: (v) => psuProvider.writeFloat(
                           ProtocolTag.psuOtpThreshold, v),
+                      info: 'The internal temperature at which OTP shuts down '
+                          'the PSU. The PSU re-enables when temperature drops '
+                          '7°C below this threshold (hysteresis). Range: 40°C '
+                          'to 85°C. Default: 75°C.',
                     ),
 
                     const SizedBox(height: 20),
@@ -195,12 +276,19 @@ class DeviceDetailScreen extends StatelessWidget {
                       value: psu.spoofedHardwareModel,
                       onEdit: (v) => psuProvider.writeUint8(
                           ProtocolTag.spoofedPsuHardwareModel, v),
+                      info: 'The hardware model byte reported to the miner '
+                          'over the Bitmain I2C protocol. Different models '
+                          'affect how the miner interprets PSU capabilities. '
+                          'Default: 0x75.',
                     ),
                     _Uint8ConfigTile(
                       label: 'Spoofed FW Version',
                       value: psu.spoofedFirmwareVersion,
                       onEdit: (v) => psuProvider.writeUint8(
                           ProtocolTag.spoofedPsuFirmwareVersion, v),
+                      info: 'The firmware version byte reported to the miner '
+                          'over the Bitmain I2C protocol. Some miners check '
+                          'this for compatibility. Default: 0x16.',
                     ),
 
                     const SizedBox(height: 20),
@@ -211,7 +299,38 @@ class DeviceDetailScreen extends StatelessWidget {
                     Card(
                       child: ListTile(
                         leading: const Icon(Icons.restart_alt),
-                        title: const Text('Reset Energy Counter'),
+                        title: Row(
+                          children: [
+                            const Expanded(
+                                child: Text('Reset Energy Counter')),
+                            GestureDetector(
+                              onTap: () => showDialog(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Reset Energy Counter'),
+                                  content: const Text(
+                                    'Resets the cumulative energy counter '
+                                    '(Wh) back to zero. This counter tracks '
+                                    'total energy delivered since last reset. '
+                                    'The counter does not persist across '
+                                    'reboots.',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx),
+                                      child: const Text('OK'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              child: Icon(
+                                Icons.info_outline,
+                                size: 20,
+                                color: Theme.of(context).colorScheme.outline,
+                              ),
+                            ),
+                          ],
+                        ),
                         subtitle: const Text('Set kWh counter back to 0'),
                         trailing: FilledButton.tonal(
                           onPressed: ble.isConnected
@@ -278,7 +397,7 @@ class _TransportChip extends StatelessWidget {
     return Chip(
       avatar: Icon(icon, size: 16, color: color),
       label: Text(label, style: const TextStyle(fontSize: 12)),
-      backgroundColor: color.withOpacity(0.2),
+      backgroundColor: color.withValues(alpha: 0.2),
       side: BorderSide(color: color),
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
@@ -359,11 +478,13 @@ class _BoolConfigTile extends StatelessWidget {
   final String label;
   final bool? value;
   final ValueChanged<bool> onChanged;
+  final String? info;
 
   const _BoolConfigTile({
     required this.label,
     required this.value,
     required this.onChanged,
+    this.info,
   });
 
   @override
@@ -371,7 +492,34 @@ class _BoolConfigTile extends StatelessWidget {
     return Card(
       child: SwitchListTile(
         title: Text(label),
-        subtitle: Text(value == null ? '--' : (value! ? 'ON' : 'OFF')),
+        subtitle: Row(
+          children: [
+            Text(value == null ? '--' : (value! ? 'ON' : 'OFF')),
+            if (info != null) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text(label),
+                    content: Text(info!),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
+                ),
+                child: Icon(
+                  Icons.info_outline,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+              ),
+            ],
+          ],
+        ),
         value: value ?? false,
         onChanged: value != null ? onChanged : null,
       ),
@@ -381,17 +529,27 @@ class _BoolConfigTile extends StatelessWidget {
 
 // Float config tile
 
-class _FloatConfigTile extends StatelessWidget {
+class _PickerConfigTile extends StatelessWidget {
   final String label;
   final double? value;
   final String unit;
-  final ValueChanged<double> onEdit;
+  final double min;
+  final double max;
+  final double step;
+  final int decimals;
+  final ValueChanged<double> onChanged;
+  final String? info;
 
-  const _FloatConfigTile({
+  const _PickerConfigTile({
     required this.label,
     required this.value,
     required this.unit,
-    required this.onEdit,
+    required this.min,
+    required this.max,
+    required this.step,
+    required this.decimals,
+    required this.onChanged,
+    this.info,
   });
 
   @override
@@ -399,66 +557,160 @@ class _FloatConfigTile extends StatelessWidget {
     return Card(
       child: ListTile(
         title: Text(label),
-        subtitle: Text(
-          value != null ? '${value!.toStringAsFixed(2)} $unit' : '--',
-          style: const TextStyle(fontFamily: 'monospace'),
+        subtitle: Row(
+          children: [
+            Text(
+              value != null
+                  ? '${value!.toStringAsFixed(decimals)} $unit'
+                  : '--',
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+            if (info != null) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text(label),
+                    content: Text(info!),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
+                ),
+                child: Icon(
+                  Icons.info_outline,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+              ),
+            ],
+          ],
         ),
-        trailing: IconButton(
-          icon: const Icon(Icons.edit),
-          onPressed: value != null
-              ? () => _showEditDialog(context, label, value!, unit, onEdit)
-              : null,
-        ),
+        trailing: const Icon(Icons.edit),
+        onTap: value != null
+            ? () async {
+                final result = await _showWheelPicker(
+                  context: context,
+                  label: label,
+                  unit: unit,
+                  currentValue: value!,
+                  min: min,
+                  max: max,
+                  step: step,
+                  decimals: decimals,
+                );
+                if (result != null) onChanged(result);
+              }
+            : null,
       ),
     );
   }
 }
 
-Future<void> _showEditDialog(
-  BuildContext context,
-  String label,
-  double currentValue,
-  String unit,
-  ValueChanged<double> onSave,
-) async {
+Future<double?> _showWheelPicker({
+  required BuildContext context,
+  required String label,
+  required String unit,
+  required double currentValue,
+  required double min,
+  required double max,
+  required double step,
+  required int decimals,
+}) async {
+  final itemCount = ((max - min) / step).round() + 1;
+  final initialIndex =
+      ((currentValue.clamp(min, max) - min) / step).round();
   final controller =
-      TextEditingController(text: currentValue.toStringAsFixed(2));
+      FixedExtentScrollController(initialItem: initialIndex);
+  double selectedValue = currentValue.clamp(min, max);
 
-  final result = await showDialog<double>(
+  return showModalBottomSheet<double>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text('Edit $label'),
-      content: TextField(
-        controller: controller,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: InputDecoration(
-          labelText: label,
-          suffixText: unit,
-          border: const OutlineInputBorder(),
-        ),
-        autofocus: true,
+    builder: (ctx) => SizedBox(
+      height: 320,
+      child: Column(
+        children: [
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                Text(label,
+                    style: Theme.of(context).textTheme.titleMedium),
+                OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx, selectedValue),
+                  child: const Text('Set'),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Selection highlight band
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  height: 42,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .primary
+                          .withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .primary
+                            .withValues(alpha: 0.3),
+                      ),
+                    ),
+                  ),
+                ),
+                ListWheelScrollView.useDelegate(
+                  controller: controller,
+                  itemExtent: 42,
+                  diameterRatio: 1.2,
+                  physics: const FixedExtentScrollPhysics(),
+                  onSelectedItemChanged: (index) {
+                    selectedValue = min + index * step;
+                    HapticFeedback.selectionClick();
+                  },
+                  childDelegate: ListWheelChildBuilderDelegate(
+                    childCount: itemCount,
+                    builder: (context, index) {
+                      final v = min + index * step;
+                      return Center(
+                        child: Text(
+                          '${v.toStringAsFixed(decimals)} $unit',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge!
+                              .copyWith(fontFamily: 'monospace'),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('CANCEL'),
-        ),
-        FilledButton(
-          onPressed: () {
-            final val = double.tryParse(controller.text);
-            if (val != null) {
-              Navigator.pop(ctx, val);
-            }
-          },
-          child: const Text('SAVE'),
-        ),
-      ],
     ),
   );
-
-  if (result != null) {
-    onSave(result);
-  }
 }
 
 // Uint8 config tile
@@ -467,11 +719,13 @@ class _Uint8ConfigTile extends StatelessWidget {
   final String label;
   final int? value;
   final ValueChanged<int> onEdit;
+  final String? info;
 
   const _Uint8ConfigTile({
     required this.label,
     required this.value,
     required this.onEdit,
+    this.info,
   });
 
   @override
@@ -479,11 +733,38 @@ class _Uint8ConfigTile extends StatelessWidget {
     return Card(
       child: ListTile(
         title: Text(label),
-        subtitle: Text(
-          value != null
-              ? '0x${value!.toRadixString(16).padLeft(2, '0').toUpperCase()}'
-              : '--',
-          style: const TextStyle(fontFamily: 'monospace'),
+        subtitle: Row(
+          children: [
+            Text(
+              value != null
+                  ? '0x${value!.toRadixString(16).padLeft(2, '0').toUpperCase()}'
+                  : '--',
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+            if (info != null) ...[
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text(label),
+                    content: Text(info!),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
+                ),
+                child: Icon(
+                  Icons.info_outline,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+              ),
+            ],
+          ],
         ),
         trailing: IconButton(
           icon: const Icon(Icons.edit),

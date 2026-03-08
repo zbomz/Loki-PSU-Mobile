@@ -33,7 +33,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
   @override
   Widget build(BuildContext context) {
     final ble = context.watch<BleProvider>();
-    final connectedId = ble.connectedDevice?.remoteId.toString();
+    final connectedId = ble.isConnected
+        ? ble.connectedDevice?.remoteId.toString()
+        : null;
 
     return Scaffold(
       appBar: AppBar(
@@ -81,9 +83,25 @@ class _DevicesScreenState extends State<DevicesScreen> {
               onRefresh: _loadDevices,
               child: ListView.separated(
                 padding: const EdgeInsets.symmetric(vertical: 8),
-                itemCount: _pairedDevices.length,
+                itemCount: _pairedDevices.length + 1,
                 separatorBuilder: (_, __) => const Divider(height: 1),
                 itemBuilder: (context, index) {
+                  if (index == _pairedDevices.length) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 16),
+                      child: FilledButton.tonal(
+                        onPressed: () async {
+                          await Navigator.of(context).push(
+                            MaterialPageRoute(
+                                builder: (_) => const ScanScreen()),
+                          );
+                          _loadDevices();
+                        },
+                        child: const Text('Scan for New Device'),
+                      ),
+                    );
+                  }
                   final device = _pairedDevices[index];
                   final isConnected = device.remoteId == connectedId;
                   return ListTile(

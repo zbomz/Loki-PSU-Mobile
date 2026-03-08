@@ -99,29 +99,39 @@ class _ScanScreenState extends State<ScanScreen> {
               ],
             ),
 
-          // Scan results list
+          // Scan results list (exclude already-connected device)
           Expanded(
-            child: ble.scanResults.isEmpty
-                ? Center(
-                    child: Text(
-                      ble.isScanning
-                          ? 'Scanning for Loki PSU devices...'
-                          : 'Tap the scan button to find devices',
-                      style: Theme.of(context).textTheme.bodyLarge,
-                    ),
-                  )
-                : ListView.separated(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    itemCount: ble.scanResults.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final result = ble.scanResults[index];
-                      return _DeviceTile(
-                        result: result,
-                        onTap: () => _onDeviceTap(context, ble, result),
-                      );
-                    },
+            child: Builder(builder: (context) {
+              final connectedId = ble.isConnected
+                  ? ble.connectedDevice?.remoteId.toString()
+                  : null;
+              final filtered = ble.scanResults
+                  .where((r) =>
+                      r.device.remoteId.toString() != connectedId)
+                  .toList();
+              if (filtered.isEmpty) {
+                return Center(
+                  child: Text(
+                    ble.isScanning
+                        ? 'Scanning for Loki PSU devices...'
+                        : 'Tap the scan button to find devices',
+                    style: Theme.of(context).textTheme.bodyLarge,
                   ),
+                );
+              }
+              return ListView.separated(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                itemCount: filtered.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final result = filtered[index];
+                  return _DeviceTile(
+                    result: result,
+                    onTap: () => _onDeviceTap(context, ble, result),
+                  );
+                },
+              );
+            }),
           ),
         ],
       ),
